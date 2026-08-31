@@ -1,5 +1,7 @@
 # predit
 
+https://predit-812.netlify.app/
+
 PWA para cortar, aplicar LUTs y exportar clips de video directamente desde el teléfono — pensada
 para editar en viaje, sin computadora, con clips de cámaras distintas (probado con los proxies de la Sony FX6, GoPro) que después se terminan de editar en apps como Edits de Instagram.
 
