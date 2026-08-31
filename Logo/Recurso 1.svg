@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Capa_2" data-name="Capa 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 79.51 85.91">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #11171f;
+      }
+
+      .cls-1, .cls-2 {
+        stroke-width: 0px;
+      }
+
+      .cls-2 {
+        fill: #fa8f33;
+      }
+
+      .cls-3 {
+        fill: #40cab4;
+        font-family: OpenSans-ExtraBold, 'Open Sans';
+        font-size: 72px;
+        font-weight: 700;
+      }
+    </style>
+  </defs>
+  <g id="Capa_1-2" data-name="Capa 1">
+    <rect class="cls-1" width="79.51" height="82.9"/>
+    <rect class="cls-2" x="38.98" y="51.92" width="21.53" height="7.53"/>
+    <text class="cls-3" transform="translate(14.28 64.82)"><tspan x="0" y="0">P</tspan></text>
+  </g>
+</svg>

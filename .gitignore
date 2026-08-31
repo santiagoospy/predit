@@ -5,3 +5,6 @@ dist-ssr/
 .DS_Store
 .vite/
 *.tsbuildinfo
+
+# Local Netlify folder
+.netlify

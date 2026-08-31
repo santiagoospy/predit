@@ -14,8 +14,8 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
       },
       manifest: {
-        name: 'Editor para colosos',
-        short_name: 'Colosos',
+        name: 'Predit',
+        short_name: 'Predit',
         description: 'Cortar, aplicar LUT y exportar clips de FX6, GoPro y DJI desde el telefono.',
         theme_color: '#0b0b0d',
         background_color: '#0b0b0d',

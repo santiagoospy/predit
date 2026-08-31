@@ -408,7 +408,7 @@ export function App() {
         signal: controller.signal,
       });
 
-      const nombre = `colosos-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.mp4`;
+      const nombre = `predit-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.mp4`;
       const via = await deliverExport(blob, nombre);
       setListo(
         `${nombre} · ${formatBytes(blob.size)} · ${via === 'compartido' ? 'listo para compartir' : 'descargado'}`,
@@ -426,7 +426,7 @@ export function App() {
   return (
     <div className="app">
       <header className="barra">
-        <h1>Editor para colosos</h1>
+        <h1>Predit</h1>
         <span className="subtitulo">{preset.nombre}</span>
       </header>
 
