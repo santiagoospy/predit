@@ -1,8 +1,7 @@
 # predit
 
 PWA para cortar, aplicar LUTs y exportar clips de video directamente desde el teléfono — pensada
-para editar en viaje, sin computadora, con clips de cámaras distintas (probado con Sony FX6, GoPro
-y drones DJI) que después se terminan de editar en apps como Edits de Instagram.
+para editar en viaje, sin computadora, con clips de cámaras distintas (probado con los proxies de la Sony FX6, GoPro) que después se terminan de editar en apps como Edits de Instagram.
 
 Corre entera en el navegador: no hay backend ni servidor de procesamiento. Todo el color y la
 codificación de video pasan por WebGL2 y WebCodecs, así que anda offline una vez instalada.
