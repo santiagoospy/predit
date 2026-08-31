@@ -26,6 +26,13 @@ export const EXPORT_PRESETS: ExportPreset[] = [
     height: 1080,
   },
   {
+    id: 'c4x3',
+    nombre: 'Clasico 4:3',
+    detalle: '1440×1080 · sale listo en 4:3, recortado desde el material',
+    width: 1440,
+    height: 1080,
+  },
+  {
     id: 'uhd',
     nombre: 'UHD 4K',
     detalle: '3840×2160 · maxima calidad, archivos grandes',
