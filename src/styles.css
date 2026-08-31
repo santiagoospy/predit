@@ -1,0 +1,437 @@
+:root {
+  --fondo: #0b0b0d;
+  --panel: #151519;
+  --borde: #2a2a32;
+  --texto: #e8e8ec;
+  --tenue: #8b8b96;
+  --acento: #4b9fff;
+  --aviso: #f0b429;
+  --error: #ff6b6b;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--texto);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  /* dvh y no vh: en iOS la barra del navegador cambia de alto al hacer scroll. */
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+.barra {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--borde);
+}
+
+.barra h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.subtitulo {
+  color: var(--tenue);
+  font-size: 13px;
+}
+
+.visor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Acotado, como en Edits: el preview NO se come toda la pantalla, para que
+     quede lugar debajo para deslizar hasta los controles y para ver el
+     encuadre completo (con lo que sobra) en vez de solo el centro. */
+  height: min(42dvh, 420px);
+  padding: 14px 20px;
+}
+
+.lienzo {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  border-radius: 6px;
+  background: #000;
+}
+
+.vacio {
+  position: absolute;
+  text-align: center;
+  color: var(--tenue);
+  padding: 0 24px;
+}
+
+.vacio small {
+  color: #5c5c66;
+}
+
+/* El <video> solo decodifica; lo que se ve es el canvas. */
+.video-oculto {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.controles {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+button {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--borde);
+  background: var(--panel);
+  color: var(--texto);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  opacity: 0.4;
+}
+
+button.principal {
+  background: var(--acento);
+  border-color: var(--acento);
+  color: #04121f;
+}
+
+button.activo {
+  background: #303038;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 16px 24px;
+}
+
+.picker {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.picker label {
+  flex: 1;
+  display: block;
+  padding: 12px 14px;
+  border: 1px dashed var(--borde);
+  border-radius: 10px;
+  color: var(--texto);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker label.ocupado {
+  color: var(--tenue);
+}
+
+.picker input {
+  display: none;
+}
+
+.picker .quitar {
+  flex: 0 0 44px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--tenue);
+}
+
+.aviso,
+.error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  border-left: 3px solid;
+}
+
+.aviso {
+  background: #2a2312;
+  border-color: var(--aviso);
+  color: #f3d79a;
+}
+
+.error {
+  background: #2a1414;
+  border-color: var(--error);
+  color: #ffb3b3;
+}
+
+.diagnostico {
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.diagnostico summary {
+  cursor: pointer;
+  color: var(--tenue);
+}
+
+.diagnostico table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+}
+
+.diagnostico th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--tenue);
+  padding: 3px 8px 3px 0;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.diagnostico td {
+  padding: 3px 0;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.fila {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.etiqueta {
+  color: var(--tenue);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button.chico {
+  flex: 0 1 auto;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+button.grande {
+  margin-top: 6px;
+  padding: 15px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.deslizador {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.deslizador .etiqueta {
+  grid-column: 1;
+}
+
+.deslizador .valor {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--texto);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  min-width: 72px;
+  text-align: right;
+}
+
+.deslizador input[type='range'] {
+  grid-column: 1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--acento);
+  /* Blancos generosos para el dedo, que el deslizador es la herramienta de corte. */
+  height: 28px;
+}
+
+.barra-progreso {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.barra-progreso div {
+  height: 100%;
+  background: var(--acento);
+  transition: width 0.15s linear;
+}
+
+.listo {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border-left: 3px solid #35c46b;
+  background: #12261a;
+  color: #a4e7bd;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.lienzo.arrastrable {
+  cursor: grab;
+  /* Sin esto, iOS interpreta el arrastre como scroll de la pagina. */
+  touch-action: none;
+}
+
+.lienzo.arrastrable:active {
+  cursor: grabbing;
+}
+
+.pista {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  color: #d8d8de;
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.tira {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  /* pan-x: dejar que el navegador scrollee horizontal la tira sin robarle
+     el gesto vertical a la pagina. */
+  touch-action: pan-x;
+  padding: 4px 16px 10px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tira-clip {
+  flex: 0 0 auto;
+  width: 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--borde);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.tira-clip.activo {
+  border-color: var(--acento);
+  background: #16232f;
+}
+
+.tira-clip .num {
+  font-size: 11px;
+  color: var(--tenue);
+  font-variant-numeric: tabular-nums;
+}
+
+.aviso-badge {
+  color: var(--aviso);
+}
+
+.tira-clip .nombre {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tira-clip .duracion {
+  font-size: 11px;
+  color: var(--tenue);
+  font-variant-numeric: tabular-nums;
+}
+
+.tira-clip .acciones {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.tira-clip .acciones button {
+  flex: 1;
+  padding: 5px 0;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.tira-agregar {
+  flex: 0 0 auto;
+  width: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px dashed var(--borde);
+  color: var(--tenue);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.tira-agregar.ocupado {
+  color: #5c5c66;
+}
+
+.tira-agregar input {
+  display: none;
+}
+
+label.chico {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+label.chico input {
+  display: none;
+}
+
+label.chico.ocupado {
+  opacity: 0.5;
+}
