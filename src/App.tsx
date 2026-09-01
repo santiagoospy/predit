@@ -7,12 +7,18 @@ import { computeFit, LutRenderer, type Framing } from './color/renderer';
 import { Recortador } from './edit/Recortador';
 import { unCuadro } from './edit/trim';
 import {
+  capaEnSegundo,
+  capaVisibleEn,
   clipOutputDuration,
+  framingDeCapa,
   nextId,
+  tiempoEnLaLinea,
   type LibraryLut,
   type MusicTrack,
+  type OverlayLayer,
   type TimelineClip,
 } from './edit/types';
+import { cargarImagen } from './media/imagen';
 import {
   clipWarnings,
   formatBytes,
@@ -43,6 +49,16 @@ const PREVIEW_MAX_SIDE = 1280;
  */
 const PASO_MUSICA = 0.1;
 
+/**
+ * Hasta donde se puede correr una capa, en semiejes del lienzo. Un poco mas de
+ * 1 para poder sacarla apenas del cuadro, pero no tanto como para perderla.
+ */
+const TOPE_CAPA = 1.5;
+
+function limitarOffset(valor: number): number {
+  return Math.min(TOPE_CAPA, Math.max(-TOPE_CAPA, valor));
+}
+
 export function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -59,6 +75,15 @@ export function App() {
    */
   const avanceRef = useRef(false);
   const clipsRef = useRef<TimelineClip[]>([]);
+  const capaRef = useRef<OverlayLayer | null>(null);
+  /** El bucle de dibujo necesita saber en que segundo del montaje esta parado. */
+  const lineaRef = useRef({ offset: 0, trimIn: 0, speed: 1 });
+  /**
+   * Un segundo puntual DENTRO del clip al que estamos saltando. Lo deja puesto
+   * un salto desde la barra de la capa, que habla en tiempo de linea de tiempo
+   * y puede caer en un clip que todavia no es el seleccionado.
+   */
+  const saltoRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const musicNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const musicGainRef = useRef<GainNode | null>(null);
@@ -88,6 +113,10 @@ export function App() {
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [listo, setListo] = useState<string | null>(null);
   const [avisos, setAvisos] = useState<string[]>([]);
+  const [capa, setCapa] = useState<OverlayLayer | null>(null);
+  const [capaBusy, setCapaBusy] = useState(false);
+  /** Que mueve el dedo cuando se arrastra sobre el visor: el clip o la capa. */
+  const [arrastra, setArrastra] = useState<'clip' | 'capa'>('clip');
 
   bypassRef.current = bypass;
   clipsRef.current = clips;
@@ -133,6 +162,11 @@ export function App() {
     return acc;
   }, [clips, selectedId]);
 
+  // El bucle de dibujo lee de aca y no de la clausura, igual que bypassRef: asi
+  // mover un deslizador no lo obliga a re-suscribirse.
+  capaRef.current = capa;
+  lineaRef.current = { offset: offsetSeleccionado, trimIn, speed };
+
   const velocidadConforme = useMemo(
     () => conformSpeed(sourceFps, DEFAULT_FRAME_RATE),
     [sourceFps],
@@ -148,10 +182,11 @@ export function App() {
     setSelectedId(clips[0]?.id ?? null);
   }, [clips, selectedId]);
 
-  // Al desmontar, libera los blobs que queden vivos.
+  // Al desmontar, libera los blobs y la imagen que queden vivos.
   useEffect(
     () => () => {
       for (const c of clipsRef.current) URL.revokeObjectURL(c.url);
+      capaRef.current?.bitmap.close();
     },
     [],
   );
@@ -162,6 +197,10 @@ export function App() {
     },
     [selectedId],
   );
+
+  const updateCapa = useCallback((patch: Partial<OverlayLayer>) => {
+    setCapa((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
   /**
    * El contexto de audio se crea recien cuando el usuario toca algo: iOS no deja
@@ -318,6 +357,25 @@ export function App() {
     rendererRef.current?.setLut('look', lutLook?.lut ?? null);
   }, [lutLook]);
 
+  // La imagen de la capa se sube a la GPU al cambiarla, no en cada cuadro: un
+  // PNG no cambia entre un cuadro y el siguiente.
+  useEffect(() => {
+    rendererRef.current?.setOverlay(capa?.bitmap ?? null);
+  }, [capa]);
+
+  // Si se acortan o se borran clips, la capa puede quedar marcada mas alla del
+  // final del montaje. Se recorta sola para que la barra no muestre una salida
+  // que ya no existe.
+  useEffect(() => {
+    setCapa((prev) => {
+      if (!prev) return prev;
+      const fin = Math.min(prev.endSeconds, duracionTotal);
+      const inicio = Math.min(prev.startSeconds, fin);
+      if (fin === prev.endSeconds && inicio === prev.startSeconds) return prev;
+      return { ...prev, startSeconds: inicio, endSeconds: fin };
+    });
+  }, [duracionTotal]);
+
   // Al cambiar de clip seleccionado, el visor salta a su marca de entrada. Si el
   // cambio lo hizo la cadena de `todo()`, ademas sigue reproduciendo sin tocar la
   // musica, que viene sonando de corrido desde que arranco.
@@ -330,7 +388,10 @@ export function App() {
       setPlaying(false);
       detenerMusica();
     }
-    const target = selected.trimIn;
+    // Si el salto vino de la barra de la capa hay un segundo puntual pedido; si
+    // no, se cae en la marca de entrada del clip, que es lo de siempre.
+    const target = saltoRef.current ?? selected.trimIn;
+    saltoRef.current = null;
     const apply = () => {
       video.currentTime = target;
       setCurrentTime(target);
@@ -431,18 +492,35 @@ export function App() {
   }, [selected, fit, preset]);
 
   const sePuedeReencuadrar = sobrante.overflowX > 0.001 || sobrante.overflowY > 0.001;
+  /** Si el dedo sobre el visor mueve la capa en vez de reencuadrar el clip. */
+  const moviendoCapa = arrastra === 'capa' && capa !== null;
+  const sePuedeArrastrar = moviendoCapa || sePuedeReencuadrar;
 
   // Arrastrar sobre la imagen para reencuadrar: en el telefono es mas directo
   // que un deslizador, y es el gesto que uno espera al mover un encuadre.
-  const arrastre = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const arrastre = useRef<{
+    x: number;
+    y: number;
+    panX: number;
+    panY: number;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
 
   const onArrastreInicio = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      if (!sePuedeReencuadrar) return;
+      if (!sePuedeArrastrar) return;
       e.currentTarget.setPointerCapture(e.pointerId);
-      arrastre.current = { x: e.clientX, y: e.clientY, panX, panY };
+      arrastre.current = {
+        x: e.clientX,
+        y: e.clientY,
+        panX,
+        panY,
+        offsetX: capa?.offsetX ?? 0,
+        offsetY: capa?.offsetY ?? 0,
+      };
     },
-    [sePuedeReencuadrar, panX, panY],
+    [sePuedeArrastrar, panX, panY, capa],
   );
 
   const onArrastreMovimiento = useCallback(
@@ -450,6 +528,21 @@ export function App() {
       const inicio = arrastre.current;
       if (!inicio) return;
       const rect = e.currentTarget.getBoundingClientRect();
+
+      if (moviendoCapa) {
+        // Mover la capa es mas simple que reencuadrar el clip: el desplazamiento
+        // ya esta en NDC, asi que no hay que dividirlo por el sobrante. Una capa
+        // se puede poner donde uno quiera, no solo donde sobra imagen.
+        const dx = (2 * (e.clientX - inicio.x)) / rect.width;
+        const dy = (2 * (e.clientY - inicio.y)) / rect.height;
+        updateCapa({
+          offsetX: limitarOffset(inicio.offsetX + dx),
+          // El eje Y de la pantalla crece hacia abajo y el de NDC hacia arriba.
+          offsetY: limitarOffset(inicio.offsetY - dy),
+        });
+        return;
+      }
+
       const patch: Partial<TimelineClip> = {};
       // Un desplazamiento de 1 en pan mueve la imagen justo lo que sobra, asi que
       // convertir pixeles a pan es dividir por el sobrante.
@@ -464,7 +557,7 @@ export function App() {
       }
       updateSelected(patch);
     },
-    [sobrante, updateSelected],
+    [moviendoCapa, updateCapa, sobrante, updateSelected],
   );
 
   const onArrastreFin = useCallback(() => {
@@ -486,7 +579,21 @@ export function App() {
       const framing = framingRef.current;
       if (stop || !framing || video.readyState < 2) return;
       try {
+        renderer.clear();
         renderer.draw(video, framing, bypassRef.current);
+
+        const capaActual = capaRef.current;
+        if (capaActual) {
+          const { offset, trimIn: entrada, speed: velocidad } = lineaRef.current;
+          const enLaLinea = tiempoEnLaLinea(offset, video.currentTime, entrada, velocidad);
+          if (capaVisibleEn(capaActual, enLaLinea)) {
+            const animada = capaEnSegundo(capaActual, enLaLinea);
+            renderer.drawOverlay(
+              framingDeCapa({ ...capaActual, scale: animada.scale }),
+              animada.opacity,
+            );
+          }
+        }
       } catch {
         // Un cuadro perdido no justifica romper el visor.
       }
@@ -565,6 +672,44 @@ export function App() {
       else arrancarMusica(offsetSeleccionado + (seconds - trimIn) / speed);
     },
     [arrancarMusica, detenerMusica, offsetSeleccionado, trimIn, speed],
+  );
+
+  /**
+   * Lleva el visor a un segundo de la LINEA DE TIEMPO, saltando de clip si hace
+   * falta. Es lo que hace falta para que marcar la entrada y la salida de la
+   * capa muestre el cuadro que se esta marcando, aunque caiga en otro clip.
+   */
+  const irALaLinea = useCallback(
+    (segundos: number) => {
+      const video = videoRef.current;
+      if (!video || clips.length === 0) return;
+
+      let acc = 0;
+      for (const [i, c] of clips.entries()) {
+        const dura = clipOutputDuration(c);
+        const ultimo = i === clips.length - 1;
+        if (segundos < acc + dura || ultimo) {
+          // Dentro del archivo hay que volver a comprimir por la velocidad: lo
+          // que en el montaje son dos segundos, a media velocidad es uno solo.
+          const dentro = Math.min(
+            c.trimOut,
+            Math.max(c.trimIn, c.trimIn + (segundos - acc) * c.speed),
+          );
+          if (c.id === selectedId) {
+            video.currentTime = dentro;
+            setCurrentTime(dentro);
+          } else {
+            // Cambiar de clip recarga el <video>; el efecto de [selectedId] va a
+            // recoger este segundo cuando el archivo nuevo este listo.
+            saltoRef.current = dentro;
+            setSelectedId(c.id);
+          }
+          return;
+        }
+        acc += dura;
+      }
+    },
+    [clips, selectedId],
   );
 
   const onPickClips = useCallback(async (fileList: FileList | null) => {
@@ -694,6 +839,56 @@ export function App() {
     setMusicTime(0);
   }, [detenerMusica]);
 
+  const cargarCapa = useCallback(
+    async (file: File | undefined) => {
+      if (!file) return;
+      setError(null);
+      setCapaBusy(true);
+      try {
+        const imagen = await cargarImagen(file);
+        // La imagen anterior se libera a mano: un ImageBitmap retiene su buffer
+        // hasta que se lo cierra, y cambiar de capa varias veces los acumularia.
+        const anterior = capaRef.current;
+        setCapa({
+          id: nextId('capa'),
+          name: file.name,
+          bitmap: imagen.bitmap,
+          width: imagen.width,
+          height: imagen.height,
+          // Por defecto la capa cubre todo el montaje: acortarla es mas facil
+          // que buscar donde empieza.
+          startSeconds: 0,
+          endSeconds: clipsRef.current.reduce((acc, c) => acc + clipOutputDuration(c), 0),
+          scale: 1,
+          offsetX: 0,
+          offsetY: 0,
+          opacity: 1,
+          // Sin animacion por defecto: la capa aparece y desaparece de golpe.
+          // Pero la escala arranca en 0.85, asi que apenas se le da duracion a
+          // la entrada se animan el tamano y la opacidad juntos, que es lo que
+          // uno espera. Para un fundido puro se lleva ese valor a 1.
+          entradaSeconds: 0,
+          salidaSeconds: 0,
+          scaleEntrada: 0.85,
+          scaleSalida: 0.85,
+        });
+        anterior?.bitmap.close();
+        setArrastra('capa');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setCapaBusy(false);
+      }
+    },
+    [],
+  );
+
+  const quitarCapa = useCallback(() => {
+    capaRef.current?.bitmap.close();
+    setCapa(null);
+    setArrastra('clip');
+  }, []);
+
   /** Frena lo que este sonando y apaga la cadena. */
   const frenar = useCallback(() => {
     videoRef.current?.pause();
@@ -788,6 +983,7 @@ export function App() {
         preset,
         frameRate: DEFAULT_FRAME_RATE,
         music,
+        layer: capa,
         onProgress: setProgress,
         signal: controller.signal,
       });
@@ -804,7 +1000,7 @@ export function App() {
       setProgress(null);
       abortRef.current = null;
     }
-  }, [clips, lutLibrary, preset, music, frenar]);
+  }, [clips, lutLibrary, preset, music, capa, frenar]);
 
   const exportando = progress !== null;
   /** Sin clip no hay nada que tocar: los controles se ven, pero apagados. */
@@ -824,7 +1020,7 @@ export function App() {
         <div className="marco">
           <canvas
             ref={canvasRef}
-            className={`lienzo${sePuedeReencuadrar ? ' arrastrable' : ''}`}
+            className={`lienzo${sePuedeArrastrar ? ' arrastrable' : ''}`}
             style={{ aspectRatio: `${preset.width} / ${preset.height}` }}
             onPointerDown={onArrastreInicio}
             onPointerMove={onArrastreMovimiento}
@@ -833,7 +1029,10 @@ export function App() {
           />
           {!hayClip && <div className="lienzo-reposo" />}
         </div>
-        {hayClip && sePuedeReencuadrar && (
+        {hayClip && moviendoCapa && (
+          <p className="pista">/* arrastrá para mover la capa */</p>
+        )}
+        {hayClip && !moviendoCapa && sePuedeReencuadrar && (
           <p className="pista">/* arrastrá la imagen para reencuadrar */</p>
         )}
         {!hayClip && (
@@ -1206,6 +1405,173 @@ export function App() {
                 El pedazo elegido dura{' '}
                 {formatDuration(music.endInMusic - music.startInMusic)} de los{' '}
                 {formatDuration(duracionTotal)} del video: el resto queda sin música.
+              </p>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="fila">
+          <span className="comentario">
+            capa{capa ? ` · ${capa.name} (${capa.width}×${capa.height})` : ''}
+          </span>
+          <div className="botones">
+            <label
+              className={`chico${capaBusy || exportando || clips.length === 0 ? ' ocupado' : ''}`}
+            >
+              {capaBusy ? 'leyendo…' : capa ? 'cambiar imagen' : '+ imagen'}
+              <input
+                type="file"
+                accept="image/*"
+                disabled={capaBusy || exportando || clips.length === 0}
+                onChange={(e) => {
+                  void cargarCapa(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+            {capa && (
+              <button className="chico" onClick={quitarCapa} disabled={exportando}>
+                quitar
+              </button>
+            )}
+          </div>
+        </div>
+
+        {capa && (
+          <>
+            <Recortador
+              duracion={duracionTotal}
+              trimIn={capa.startSeconds}
+              trimOut={capa.endSeconds}
+              // La capa se marca contra la LINEA DE TIEMPO entera, no contra el
+              // clip: por eso el cabezal es el segundo del montaje y no el del
+              // <video>, y por eso puede cruzar un corte.
+              currentTime={tiempoEnLaLinea(offsetSeleccionado, currentTime, trimIn, speed)}
+              paso={unCuadro(DEFAULT_FRAME_RATE)}
+              nombrePaso="un cuadro"
+              centro={{
+                etiqueta: 'se ve',
+                valor: `${(capa.endSeconds - capa.startSeconds).toFixed(1)}s`,
+                nota: `${duracionTotal.toFixed(1)}s de video`,
+              }}
+              deshabilitado={exportando}
+              onTrim={(p) => {
+                if (p.trimIn !== undefined) updateCapa({ startSeconds: p.trimIn });
+                if (p.trimOut !== undefined) updateCapa({ endSeconds: p.trimOut });
+              }}
+              onSeek={irALaLinea}
+            />
+
+            <div className="fila">
+              <span className="comentario">el dedo sobre el visor mueve</span>
+              <div className="botones">
+                <button
+                  className={arrastra === 'clip' ? 'activo chico' : 'chico'}
+                  onClick={() => setArrastra('clip')}
+                  disabled={exportando}
+                  title="Arrastrar reencuadra el clip de abajo"
+                >
+                  el clip
+                </button>
+                <button
+                  className={arrastra === 'capa' ? 'activo chico' : 'chico'}
+                  onClick={() => setArrastra('capa')}
+                  disabled={exportando}
+                  title="Arrastrar mueve la capa por el cuadro"
+                >
+                  la capa
+                </button>
+              </div>
+            </div>
+
+            <Deslizador
+              etiqueta="tamaño de la capa"
+              valor={capa.scale}
+              min={0.05}
+              max={2}
+              paso={0.01}
+              onChange={(v) => updateCapa({ scale: v })}
+              texto={`${Math.round(capa.scale * 100)}%`}
+              deshabilitado={exportando}
+            />
+            <Deslizador
+              etiqueta="opacidad de la capa"
+              valor={capa.opacity}
+              max={1}
+              paso={0.01}
+              onChange={(v) => updateCapa({ opacity: v })}
+              texto={capa.opacity === 0 ? 'invisible' : `${Math.round(capa.opacity * 100)}%`}
+              deshabilitado={exportando}
+            />
+
+            <div className="fila">
+              <span className="comentario">animación</span>
+            </div>
+            <Deslizador
+              etiqueta="entrada"
+              valor={capa.entradaSeconds}
+              max={3}
+              paso={0.1}
+              onChange={(v) => updateCapa({ entradaSeconds: v })}
+              texto={capa.entradaSeconds === 0 ? 'de golpe' : `${capa.entradaSeconds.toFixed(1)} s`}
+              deshabilitado={exportando}
+            />
+            <Deslizador
+              etiqueta="entra desde"
+              valor={capa.scaleEntrada}
+              min={0.2}
+              max={2}
+              paso={0.05}
+              onChange={(v) => updateCapa({ scaleEntrada: v })}
+              texto={
+                capa.entradaSeconds === 0
+                  ? 'sin entrada'
+                  : capa.scaleEntrada === 1
+                    ? 'sin zoom'
+                    : `${Math.round(capa.scaleEntrada * 100)}%`
+              }
+              deshabilitado={exportando || capa.entradaSeconds === 0}
+            />
+            <Deslizador
+              etiqueta="salida"
+              valor={capa.salidaSeconds}
+              max={3}
+              paso={0.1}
+              onChange={(v) => updateCapa({ salidaSeconds: v })}
+              texto={capa.salidaSeconds === 0 ? 'de golpe' : `${capa.salidaSeconds.toFixed(1)} s`}
+              deshabilitado={exportando}
+            />
+            <Deslizador
+              etiqueta="sale hacia"
+              valor={capa.scaleSalida}
+              min={0.2}
+              max={2}
+              paso={0.05}
+              onChange={(v) => updateCapa({ scaleSalida: v })}
+              texto={
+                capa.salidaSeconds === 0
+                  ? 'sin salida'
+                  : capa.scaleSalida === 1
+                    ? 'sin zoom'
+                    : `${Math.round(capa.scaleSalida * 100)}%`
+              }
+              deshabilitado={exportando || capa.salidaSeconds === 0}
+            />
+
+            {capa.entradaSeconds + capa.salidaSeconds > capa.endSeconds - capa.startSeconds && (
+              <p className="aviso">
+                La entrada y la salida no entran en los{' '}
+                {(capa.endSeconds - capa.startSeconds).toFixed(1)}s que dura la capa: se acortan
+                en proporción, así que la capa se ve entera apenas un instante.
+              </p>
+            )}
+
+            {capa.opacity > 0 && capa.endSeconds <= capa.startSeconds && (
+              <p className="aviso">
+                La marca de salida de la capa está antes que la de entrada: no se va a ver en
+                ningún cuadro.
               </p>
             )}
           </>

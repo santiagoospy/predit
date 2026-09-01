@@ -1,6 +1,11 @@
 /**
- * Shaders del visor. Un solo paso: el cuadro entra, sale con los dos LUTs
- * aplicados en cadena (conversion de log a Rec.709 primero, look creativo despues).
+ * Shaders del visor. Un solo programa para dos usos: el clip de abajo, que sale
+ * con los dos LUTs aplicados en cadena (conversion de log a Rec.709 primero,
+ * look creativo despues) y opaco; y una capa superpuesta, que sale sin LUTs y
+ * con su transparencia.
+ *
+ * La capa no pasa por los LUTs a proposito: un logo ya esta en Rec.709, y
+ * meterlo en un LUT de log a 709 le arruinaria el color.
  */
 
 export const VERTEX_SHADER = `#version 300 es
@@ -24,6 +29,11 @@ in vec2 vUv;
 out vec4 fragColor;
 
 uniform sampler2D uFrame;
+
+/** Cuanto se ve la capa, de 0 a 1. El clip de abajo siempre va en 1. */
+uniform float uOpacity;
+/** Si respetar la transparencia de la textura. El clip de abajo es opaco. */
+uniform bool  uUsarAlfa;
 
 uniform sampler3D uLutConv;
 uniform bool  uHasConv;
@@ -51,7 +61,8 @@ vec3 applyLut(sampler3D lut, float size, vec3 domMin, vec3 domMax, vec3 color) {
 }
 
 void main() {
-  vec3 color = texture(uFrame, vUv).rgb;
+  vec4 src = texture(uFrame, vUv);
+  vec3 color = src.rgb;
 
   if (uHasConv) {
     color = applyLut(uLutConv, uSizeConv, uDomMinConv, uDomMaxConv, color);
@@ -60,6 +71,14 @@ void main() {
     color = applyLut(uLutLook, uSizeLook, uDomMinLook, uDomMaxLook, color);
   }
 
-  fragColor = vec4(color, 1.0);
+  if (uUsarAlfa) {
+    // Alfa premultiplicado: el color YA viene multiplicado por su alfa, asi que
+    // la opacidad tiene que pegarle a los dos por igual. Premultiplicado y no
+    // directo porque, al escalar la capa, el filtrado bilineal de un PNG
+    // directo deja un halo en los bordes blandos.
+    fragColor = vec4(color * uOpacity, src.a * uOpacity);
+  } else {
+    fragColor = vec4(color, 1.0);
+  }
 }
 `;

@@ -28,22 +28,43 @@ export interface Framing {
   /** -1 a 1: hacia donde corre el recorte cuando sobra imagen. 0 es centrado. */
   panX?: number;
   panY?: number;
+  /**
+   * Multiplica el encaje. 1 (o ausente) es el encaje de siempre.
+   *
+   * Lo usan las capas superpuestas, que se agrandan y achican a dedo. El clip
+   * base no lo toca: su tamano lo decide 'cover' o 'contain'.
+   */
+  scale?: number;
+  /**
+   * Desplazamiento libre en NDC del lienzo, sumado al que ya produce el pan.
+   * 1 es medio lienzo. Tambien es cosa de las capas: el pan del clip base solo
+   * puede correr lo que sobra, y una capa se puede poner donde uno quiera.
+   */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 /**
- * Dibuja un cuadro de video en un canvas aplicando dos LUTs en cadena.
+ * Compone un cuadro en un canvas: el clip de abajo con sus dos LUTs en cadena,
+ * y encima una capa con transparencia.
  *
- * La fuente puede ser un <video> (el camino del visor, donde decodifica el
- * hardware de iOS) o un VideoFrame de WebCodecs (el camino del export, donde
- * hace falta exactitud de cuadro).
+ * La fuente del clip puede ser un <video> (el camino del visor, donde decodifica
+ * el hardware de iOS) o un VideoFrame de WebCodecs (el camino del export, donde
+ * hace falta exactitud de cuadro). La de la capa es un ImageBitmap.
+ *
+ * Se dibuja en varias pasadas, asi que el orden importa: primero clear(), despues
+ * draw() con el clip, y al final drawOverlay() para lo que vaya encima.
  */
 export class LutRenderer {
   private readonly gl: WebGL2RenderingContext;
   private readonly program: WebGLProgram;
   private readonly vao: WebGLVertexArrayObject;
   private readonly frameTex: WebGLTexture;
+  private readonly overlayTex: WebGLTexture;
   private readonly loc: Record<string, WebGLUniformLocation | null> = {};
   private readonly luts: Record<LutSlot, LoadedLut | null> = { conv: null, look: null };
+  /** Si ya se subio una imagen de capa. Sin esto, drawOverlay dibujaria basura. */
+  private hayOverlay = false;
   private disposed = false;
 
   constructor(private readonly canvas: HTMLCanvasElement | OffscreenCanvas) {
@@ -64,7 +85,7 @@ export class LutRenderer {
     gl.useProgram(this.program);
 
     const uniformNames = [
-      'uTransform', 'uFrame',
+      'uTransform', 'uFrame', 'uOpacity', 'uUsarAlfa',
       'uLutConv', 'uHasConv', 'uSizeConv', 'uDomMinConv', 'uDomMaxConv',
       'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook',
     ];
@@ -94,14 +115,8 @@ export class LutRenderer {
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
 
-    const tex = gl.createTexture();
-    if (!tex) throw new Error('No se pudo crear la textura del cuadro');
-    this.frameTex = tex;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.frameTex = crearTextura2D(gl, 'del cuadro');
+    this.overlayTex = crearTextura2D(gl, 'de la capa');
   }
 
   /** Carga (o quita, con null) uno de los dos LUTs. */
@@ -128,6 +143,22 @@ export class LutRenderer {
   }
 
   /**
+   * Borra el lienzo a negro. Va antes de la primera pasada.
+   *
+   * Esta afuera de draw() a proposito: si draw() borrara, dibujar una capa
+   * encima taparia al clip en vez de mezclarse con el.
+   */
+  clear(): void {
+    this.assertAlive();
+    const gl = this.gl;
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  /**
+   * Dibuja el clip de abajo: con sus LUTs y opaco. NO borra el lienzo.
+   *
    * @param bypass Dibuja el cuadro crudo, sin LUTs. Sirve para comparar antes y
    *   despues sin tener que volver a subir las texturas a la GPU.
    */
@@ -135,29 +166,59 @@ export class LutRenderer {
     this.assertAlive();
     const gl = this.gl;
 
-    gl.bindVertexArray(this.vao);
-    gl.useProgram(this.program);
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
-    // El origen de una textura WebGL esta abajo; el de un video, arriba.
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-
+    this.preparar();
+    this.subirTextura(this.frameTex, source);
     this.bindLut('conv', gl.TEXTURE1, 'Conv', bypass);
     this.bindLut('look', gl.TEXTURE2, 'Look', bypass);
+    gl.uniform1f(this.loc['uOpacity']!, 1);
+    gl.uniform1i(this.loc['uUsarAlfa']!, 0);
 
-    gl.uniformMatrix3fv(
-      this.loc['uTransform']!,
-      false,
-      computeFitTransform(framing, this.canvas.width, this.canvas.height),
-    );
+    this.dibujarQuad(framing);
+  }
 
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  /**
+   * Sube la imagen de la capa. Con null la olvida.
+   *
+   * Es una llamada aparte de drawOverlay porque un PNG no cambia entre un cuadro
+   * y el siguiente: subirlo en cada vuelta del rAF seria tirarle ancho de banda a
+   * la GPU sesenta veces por segundo. Acepta cualquier TexImageSource igual, asi
+   * que el dia que la capa sea una animacion se llama por cuadro sin cambiar nada.
+   */
+  setOverlay(source: TexImageSource | null): void {
+    this.assertAlive();
+    if (!source) {
+      this.hayOverlay = false;
+      return;
+    }
+    this.subirTextura(this.overlayTex, source);
+    this.hayOverlay = true;
+  }
+
+  /**
+   * Dibuja la capa encima de lo que ya haya en el lienzo, con su transparencia y
+   * sin LUTs. Si no se cargo ninguna capa no hace nada.
+   */
+  drawOverlay(framing: Framing, opacity: number): void {
+    this.assertAlive();
+    if (!this.hayOverlay) return;
+    const gl = this.gl;
+
+    this.preparar();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.overlayTex);
+    // bypass en true: la capa no pasa por los LUTs del clip de abajo.
+    this.bindLut('conv', gl.TEXTURE1, 'Conv', true);
+    this.bindLut('look', gl.TEXTURE2, 'Look', true);
+    gl.uniform1f(this.loc['uOpacity']!, Math.min(1, Math.max(0, opacity)));
+    gl.uniform1i(this.loc['uUsarAlfa']!, 1);
+
+    // ONE y no SRC_ALPHA porque la textura viene con el alfa ya premultiplicado
+    // (asi la pide cargarImagen). Con SRC_ALPHA la capa saldria atenuada dos
+    // veces, translucida de mas.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    this.dibujarQuad(framing);
+    gl.disable(gl.BLEND);
   }
 
   /** Lee el lienzo como RGBA. Se usa para comparar contra ffmpeg en los tests. */
@@ -178,9 +239,46 @@ export class LutRenderer {
       this.luts[slot] = null;
     }
     gl.deleteTexture(this.frameTex);
+    gl.deleteTexture(this.overlayTex);
     gl.deleteVertexArray(this.vao);
     gl.deleteProgram(this.program);
     this.disposed = true;
+  }
+
+  /** Deja el programa, el VAO y el viewport listos para una pasada. */
+  private preparar(): void {
+    const gl = this.gl;
+    gl.bindVertexArray(this.vao);
+    gl.useProgram(this.program);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  private subirTextura(tex: WebGLTexture, source: TexImageSource): void {
+    const gl = this.gl;
+
+    // El origen de una textura WebGL esta abajo y el de un video arriba, asi que
+    // hay que voltear... salvo con un ImageBitmap. Para esa fuente WebGL IGNORA
+    // los pixelStorei, porque el bitmap ya viene con su orientacion y su alfa
+    // resueltos de createImageBitmap; por eso la capa se voltea alla y no aca.
+    // Se decide por el tipo y no por la pasada para que un VideoFrame usado de
+    // capa, el dia que la capa sea una animacion, se voltee como corresponde.
+    const yaOrientada = typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap;
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, !yaOrientada);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  }
+
+  private dibujarQuad(framing: Framing): void {
+    const gl = this.gl;
+    gl.uniformMatrix3fv(
+      this.loc['uTransform']!,
+      false,
+      computeFitTransform(framing, this.canvas.width, this.canvas.height),
+    );
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
   private bindLut(slot: LutSlot, unit: number, suffix: string, bypass: boolean): void {
@@ -232,8 +330,10 @@ export function computeFitTransform(
   const m11 = ny * cos * hh;
 
   // Solo se puede desplazar lo que sobra; si no sobra nada, el pan no hace nada.
-  const tx = clamp(framing.panX ?? 0, -1, 1) * overflowX;
-  const ty = clamp(framing.panY ?? 0, -1, 1) * overflowY;
+  // El desplazamiento libre de una capa, en cambio, no tiene ese tope: se suma
+  // entero, porque una capa se puede poner incluso saliendose del cuadro.
+  const tx = clamp(framing.panX ?? 0, -1, 1) * overflowX + (framing.offsetX ?? 0);
+  const ty = clamp(framing.panY ?? 0, -1, 1) * overflowY + (framing.offsetY ?? 0);
 
   // mat3 en orden por columnas, que es lo que espera uniformMatrix3fv.
   return new Float32Array([m00, m10, 0, m01, m11, 0, tx, ty, 1]);
@@ -268,13 +368,27 @@ export function computeFit(
   const scaleY = canvasHeight / displayHeight;
   // 'contain' entra entera y deja bandas; 'cover' llena y recorta lo que sobra.
   // En los dos casos el factor es unico, asi que la proporcion se respeta.
-  const k = framing.mode === 'cover' ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
+  const encaje = framing.mode === 'cover' ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
+  // La escala se aplica aca y no mas tarde para que el sobrante que sale de
+  // esta funcion siga correspondiendo al k que sale de esta funcion.
+  const k = encaje * (framing.scale ?? 1);
 
   return {
     k,
     overflowX: Math.max((k * displayWidth) / canvasWidth - 1, 0),
     overflowY: Math.max((k * displayHeight) / canvasHeight - 1, 0),
   };
+}
+
+function crearTextura2D(gl: WebGL2RenderingContext, que: string): WebGLTexture {
+  const tex = gl.createTexture();
+  if (!tex) throw new Error('No se pudo crear la textura ' + que);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
 }
 
 function normalizeRotation(degrees: number | undefined): number {

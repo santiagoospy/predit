@@ -94,3 +94,72 @@ describe('computeFitTransform', () => {
     expect(Array.from(c)).toEqual(Array.from(d));
   });
 });
+
+/**
+ * La escala y el desplazamiento libres son lo que necesita una capa superpuesta:
+ * el clip base se encuadra con 'cover'/'contain' y pan, pero una capa se pone
+ * donde uno quiera y del tamano que quiera.
+ */
+describe('computeFitTransform con escala y desplazamiento de capa', () => {
+  it('escala 1 es exactamente lo mismo que no pasar escala', () => {
+    const sin = computeFitTransform(base, 1080, 1920);
+    const con = computeFitTransform({ ...base, scale: 1 }, 1080, 1920);
+    expect(Array.from(con)).toEqual(Array.from(sin));
+  });
+
+  it('sin escala ni desplazamiento, el clip base no cambia', () => {
+    const antes = computeFitTransform({ ...base, mode: 'cover', panX: 0.5 }, 1080, 1920);
+    const despues = computeFitTransform(
+      { ...base, mode: 'cover', panX: 0.5, scale: undefined, offsetX: undefined },
+      1080,
+      1920,
+    );
+    expect(Array.from(despues)).toEqual(Array.from(antes));
+  });
+
+  it('media escala deja la capa a la mitad de tamano', () => {
+    const entera = computeFitTransform(base, 1920, 1080);
+    const mitad = computeFitTransform({ ...base, scale: 0.5 }, 1920, 1080);
+    const [xe, ye] = transformCorner(entera, 1, 1);
+    const [xm, ym] = transformCorner(mitad, 1, 1);
+    expect(xm).toBeCloseTo(xe / 2, 6);
+    expect(ym).toBeCloseTo(ye / 2, 6);
+  });
+
+  it('el desplazamiento mueve la capa exactamente eso, en NDC', () => {
+    const m = computeFitTransform({ ...base, scale: 0.5, offsetX: 0.4, offsetY: -0.3 }, 1920, 1080);
+    const centrada = computeFitTransform({ ...base, scale: 0.5 }, 1920, 1080);
+    const [x, y] = transformCorner(m, 1, 1);
+    const [xc, yc] = transformCorner(centrada, 1, 1);
+    expect(x - xc).toBeCloseTo(0.4, 6);
+    expect(y - yc).toBeCloseTo(-0.3, 6);
+  });
+
+  it('el desplazamiento NO esta limitado por el sobrante, al reves que el pan', () => {
+    // En 'contain' no sobra nada, asi que el pan no haria nada...
+    const conPan = computeFitTransform({ ...base, panX: 1 }, 1920, 1080);
+    expect(conPan[6]).toBeCloseTo(0, 6);
+    // ...pero la capa se puede correr igual, incluso saliendose del cuadro.
+    const conOffset = computeFitTransform({ ...base, offsetX: 1.4 }, 1920, 1080);
+    expect(conOffset[6]).toBeCloseTo(1.4, 6);
+  });
+
+  it('una capa chica en una esquina queda dentro del lienzo', () => {
+    // Una capa cuadrada al 20%, corrida a la esquina superior derecha.
+    const capa = { mode: 'contain' as const, textureWidth: 400, textureHeight: 400 };
+    const m = computeFitTransform({ ...capa, scale: 0.2, offsetX: 0.75, offsetY: 0.75 }, 1080, 1920);
+    const [xd, yd] = transformCorner(m, 1, 1);
+    const [xi, yi] = transformCorner(m, -1, -1);
+    expect(xd).toBeLessThanOrEqual(1);
+    expect(yd).toBeLessThanOrEqual(1);
+    expect(xi).toBeGreaterThan(0);
+    expect(yi).toBeGreaterThan(0);
+  });
+
+  it('la escala se aplica antes del sobrante, asi el pan sigue siendo coherente', () => {
+    // Con 'cover' y escala 2 sobra el doble, y el pan al maximo tiene que dejar
+    // el borde de la imagen pegado al borde del lienzo, igual que sin escala.
+    const m = computeFitTransform({ ...base, mode: 'cover', scale: 2, panX: 1 }, 1080, 1920);
+    expect(transformCorner(m, -1, 1)[0]).toBeCloseTo(-1, 5);
+  });
+});

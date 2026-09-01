@@ -27,6 +27,7 @@ import {
 } from '../audio/mix';
 import type { Lut3D } from '../color/cube';
 import { LutRenderer, type FitMode, type Framing } from '../color/renderer';
+import { capaEnSegundo, capaVisibleEn, framingDeCapa } from '../edit/types';
 import type { ExportPreset } from './presets';
 
 export interface ExportClip {
@@ -47,6 +48,28 @@ export interface ExportClip {
   audioCanDecode: boolean;
 }
 
+/**
+ * La capa que va encima de todo el montaje, ya decodificada.
+ *
+ * Sus tiempos son absolutos de la linea de tiempo, no de ningun clip: por eso
+ * la comparacion se hace contra el reloj de salida y no contra el del archivo.
+ */
+export interface ExportLayer {
+  bitmap: ImageBitmap;
+  width: number;
+  height: number;
+  startSeconds: number;
+  endSeconds: number;
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  opacity: number;
+  entradaSeconds: number;
+  salidaSeconds: number;
+  scaleEntrada: number;
+  scaleSalida: number;
+}
+
 export interface ExportProgress {
   /** 0 a 1. */
   fraction: number;
@@ -62,6 +85,8 @@ export interface ExportOptions {
   frameRate: number;
   /** La musica que va sobre toda la linea de tiempo, ya decodificada. */
   music: MixMusic | null;
+  /** La capa que va encima de la imagen, o null si no hay ninguna. */
+  layer: ExportLayer | null;
   onProgress?: (progress: ExportProgress) => void;
   signal?: AbortSignal;
 }
@@ -117,6 +142,8 @@ export async function exportClips(
   canvas.width = preset.width;
   canvas.height = preset.height;
   const renderer = new LutRenderer(canvas);
+  // Una sola vez para todo el export: la imagen no cambia de un clip a otro.
+  renderer.setOverlay(options.layer?.bitmap ?? null);
 
   const target = new BufferTarget();
   const output = new Output({
@@ -156,6 +183,7 @@ export async function exportClips(
         timelineStart: timelineSeconds,
         timelineEnd: clipEndSeconds,
         framesWritten,
+        layer: options.layer,
         signal: options.signal,
         onFrame: (written) =>
           options.onProgress?.({
@@ -195,6 +223,7 @@ interface RenderClipContext {
   timelineStart: number;
   timelineEnd: number;
   framesWritten: number;
+  layer: ExportLayer | null;
   signal?: AbortSignal | undefined;
   onFrame: (framesWritten: number) => void;
 }
@@ -226,10 +255,23 @@ async function renderClip(clip: ExportClip, ctx: RenderClipContext): Promise<num
   };
 
   const sink = new VideoSampleSink(track);
+  const capa = ctx.layer;
+  /**
+   * Si la capa se mueve, el cuadro compuesto cambia aunque el de abajo no, asi
+   * que hay que recomponer en cada cuadro de salida. Si no se mueve, alcanza
+   * con recomponer cuando entra o sale, que es mucho mas barato en camara lenta.
+   */
+  const capaSeAnima = capa !== null && (capa.entradaSeconds > 0 || capa.salidaSeconds > 0);
   let framesWritten = ctx.framesWritten;
 
   for await (const sample of sink.samples(clip.inSeconds, clip.outSeconds)) {
     throwIfAborted(ctx.signal);
+    // El cuadro se retiene toda la vuelta del while y no se cierra en un
+    // microtask: si la capa entra o sale en el medio hay que volver a componer,
+    // y para eso el cuadro tiene que seguir vivo. Igual se cierra apenas
+    // termina, porque cada VideoFrame retiene un buffer de video sin comprimir
+    // y en un telefono acumularlos es lo que hace que Safari mate la pestana.
+    let frame: VideoFrame | null = null;
     try {
       const duration = sample.duration > 0 ? sample.duration : fallbackDuration;
       // Donde cae este cuadro en la linea de tiempo, ya estirado por la velocidad.
@@ -238,36 +280,42 @@ async function renderClip(clip: ExportClip, ctx: RenderClipContext): Promise<num
         ctx.timelineEnd,
       );
 
-      let drawn = false;
+      let conCapaAntes: boolean | null = null;
       // Emite todos los cuadros de salida que este cuadro de origen cubre. Si
       // cubre varios, se repiten (camara lenta mas alla de lo que da el material);
       // si no cubre ninguno, se descarta (camara rapida).
       while (framesWritten / ctx.frameRate < sampleEnd) {
-        if (!drawn) {
-          ctx.renderer.draw(toTexture(sample), framing, false);
-          drawn = true;
+        // La capa se mide contra el reloj de SALIDA, que es el unico que habla
+        // en tiempo de linea de tiempo. El del archivo no sirve: la capa no
+        // pertenece a este clip ni a ningun otro.
+        const enLaLinea = framesWritten / ctx.frameRate;
+        const conCapa = capa !== null && capaVisibleEn(capa, enLaLinea);
+        // Se recompone solo cuando cambia algo. A velocidad 1x el while da una
+        // vuelta sola, asi que en el caso normal esto dibuja una vez, como antes.
+        if (conCapaAntes !== conCapa || (conCapa && capaSeAnima)) {
+          frame ??= sample.toVideoFrame();
+          ctx.renderer.clear();
+          ctx.renderer.draw(frame, framing, false);
+          if (conCapa) {
+            const animada = capaEnSegundo(capa!, enLaLinea);
+            ctx.renderer.drawOverlay(
+              framingDeCapa({ ...capa!, scale: animada.scale }),
+              animada.opacity,
+            );
+          }
+          conCapaAntes = conCapa;
         }
         await ctx.source.add(framesWritten / ctx.frameRate, 1 / ctx.frameRate);
         framesWritten++;
         ctx.onFrame(framesWritten);
       }
     } finally {
+      frame?.close();
       sample.close();
     }
   }
 
   return framesWritten;
-}
-
-/**
- * VideoFrame sirve directo como fuente de textura en WebGL. Se cierra enseguida
- * porque cada uno retiene un buffer de video sin comprimir, y en un telefono
- * acumularlos es lo que hace que Safari mate la pestana.
- */
-function toTexture(sample: { toVideoFrame(): VideoFrame }): VideoFrame {
-  const frame = sample.toVideoFrame();
-  queueMicrotask(() => frame.close());
-  return frame;
 }
 
 async function pickCodec(preset: ExportPreset): Promise<VideoCodec> {
