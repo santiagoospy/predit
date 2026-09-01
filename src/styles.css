@@ -106,6 +106,25 @@ body {
   padding: 14px 18px;
 }
 
+/* Envuelve al lienzo para que el placeholder de reposo pueda calcarle la caja.
+   Hace falta porque el canvas es opaco (alpha:false en LutRenderer) y un fondo
+   de CSS sobre el no se veria. */
+.marco {
+  position: relative;
+  display: flex;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* El visor sin clip: las rayas diagonales del mock. Ademas tapa el ultimo cuadro
+   dibujado, que el canvas conserva por preserveDrawingBuffer al borrar los clips. */
+.lienzo-reposo {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radio-lg);
+  background: repeating-linear-gradient(45deg, #26262a 0 10px, #222226 10px 20px);
+}
+
 .lienzo {
   max-width: 100%;
   max-height: 100%;
@@ -116,10 +135,45 @@ body {
 
 .vacio {
   position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   text-align: center;
   color: var(--tenue);
   font-size: 12px;
   padding: 0 24px;
+}
+
+/* Es la unica accion posible con el visor vacio, asi que va en acento pleno:
+   con borde punteado y gris se perdia contra el fondo de rayas. */
+.importar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 12px 20px;
+  border-radius: var(--radio);
+  border: 1px solid var(--acento);
+  background: var(--acento);
+  color: var(--panel);
+  font: 600 12px/1.2 var(--mono);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.importar:hover {
+  background: #6c9bc0;
+  border-color: #6c9bc0;
+}
+
+.importar.ocupado {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.importar input {
+  display: none;
 }
 
 .vacio small {
@@ -462,8 +516,8 @@ button.grande {
   align-items: center;
   justify-content: center;
   border-radius: var(--radio);
-  border: 1px dashed var(--borde);
-  color: var(--tenue);
+  border: 1px dashed var(--acento);
+  color: var(--acento);
   font-size: 11px;
   cursor: pointer;
   text-align: center;
