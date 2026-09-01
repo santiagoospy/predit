@@ -4,6 +4,7 @@ import { decodeAudioRange } from './audio/decode';
 import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
+import { Recortador } from './edit/Recortador';
 import {
   clipOutputDuration,
   nextId,
@@ -695,34 +696,16 @@ export function App() {
 
       {selected && (
         <section className="panel">
-          <Deslizador
-            etiqueta="Posición"
-            valor={currentTime}
-            max={duration}
-            onChange={seek}
-            texto={`${formatDuration(currentTime)} / ${formatDuration(duration)}`}
-          />
-          <Deslizador
-            etiqueta="Entrada"
-            valor={trimIn}
-            max={duration}
-            onChange={(v) => {
-              const nuevo = Math.min(v, trimOut - 1 / sourceFps);
-              updateSelected({ trimIn: nuevo });
-              seek(nuevo);
-            }}
-            texto={formatDuration(trimIn)}
-          />
-          <Deslizador
-            etiqueta="Salida"
-            valor={trimOut}
-            max={duration}
-            onChange={(v) => {
-              const nuevo = Math.max(v, trimIn + 1 / sourceFps);
-              updateSelected({ trimOut: nuevo });
-              seek(nuevo);
-            }}
-            texto={formatDuration(trimOut)}
+          <Recortador
+            duracion={duration}
+            trimIn={trimIn}
+            trimOut={trimOut}
+            currentTime={currentTime}
+            fps={sourceFps}
+            speed={speed}
+            deshabilitado={exportando}
+            onTrim={updateSelected}
+            onSeek={seek}
           />
 
           <div className="fila">
