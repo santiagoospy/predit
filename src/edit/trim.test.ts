@@ -23,39 +23,39 @@ describe('segundosDesdeX', () => {
 
 describe('limitarEntrada', () => {
   it('deja pasar un valor comun', () => {
-    expect(limitarEntrada(3, 8, 25)).toBe(3);
+    expect(limitarEntrada(3, 8, unCuadro(25))).toBe(3);
   });
 
   it('no deja que la entrada alcance a la salida: queda un cuadro de por medio', () => {
-    expect(limitarEntrada(8, 8, 25)).toBeCloseTo(8 - 1 / 25, 6);
-    expect(limitarEntrada(20, 8, 25)).toBeCloseTo(8 - 1 / 25, 6);
+    expect(limitarEntrada(8, 8, unCuadro(25))).toBeCloseTo(8 - 1 / 25, 6);
+    expect(limitarEntrada(20, 8, unCuadro(25))).toBeCloseTo(8 - 1 / 25, 6);
   });
 
   it('no se va antes del principio del clip', () => {
-    expect(limitarEntrada(-5, 8, 25)).toBe(0);
+    expect(limitarEntrada(-5, 8, unCuadro(25))).toBe(0);
   });
 
   it('con la salida pegada al cero, la entrada se queda en cero', () => {
-    expect(limitarEntrada(1, 0.01, 25)).toBe(0);
+    expect(limitarEntrada(1, 0.01, unCuadro(25))).toBe(0);
   });
 });
 
 describe('limitarSalida', () => {
   it('deja pasar un valor comun', () => {
-    expect(limitarSalida(8, 3, 25, 12)).toBe(8);
+    expect(limitarSalida(8, 3, unCuadro(25), 12)).toBe(8);
   });
 
   it('no deja que la salida alcance a la entrada', () => {
-    expect(limitarSalida(3, 3, 25, 12)).toBeCloseTo(3 + 1 / 25, 6);
-    expect(limitarSalida(0, 3, 25, 12)).toBeCloseTo(3 + 1 / 25, 6);
+    expect(limitarSalida(3, 3, unCuadro(25), 12)).toBeCloseTo(3 + 1 / 25, 6);
+    expect(limitarSalida(0, 3, unCuadro(25), 12)).toBeCloseTo(3 + 1 / 25, 6);
   });
 
   it('no se pasa del final del clip', () => {
-    expect(limitarSalida(99, 3, 25, 12)).toBe(12);
+    expect(limitarSalida(99, 3, unCuadro(25), 12)).toBe(12);
   });
 
   it('con la entrada pegada al final, la salida se queda en el final', () => {
-    expect(limitarSalida(99, 12, 25, 12)).toBe(12);
+    expect(limitarSalida(99, 12, unCuadro(25), 12)).toBe(12);
   });
 });
 
@@ -63,7 +63,7 @@ describe('ajuste de a un cuadro', () => {
   // Es lo que hacen los botones de flecha: sumar o restar un cuadro y volver a
   // pasar por el limite.
   const moverEntrada = (trimIn: number, cuadros: number, trimOut: number, fps: number) =>
-    limitarEntrada(trimIn + cuadros * unCuadro(fps), trimOut, fps);
+    limitarEntrada(trimIn + cuadros * unCuadro(fps), trimOut, unCuadro(fps));
 
   it('un cuadro adelante y uno atras vuelven al mismo lugar', () => {
     const ida = moverEntrada(3, 1, 8, 50);
@@ -87,6 +87,12 @@ describe('ajuste de a un cuadro', () => {
   it('un fps invalido cae en 25 en vez de dar Infinity', () => {
     expect(unCuadro(0)).toBeCloseTo(0.04, 6);
     expect(unCuadro(Number.NaN)).toBeCloseTo(0.04, 6);
+  });
+
+  it('el paso va en segundos, asi la musica puede cortar de a decimas', () => {
+    // La barra de musica usa 0.1: no tiene cuadros, pero el limite es el mismo.
+    expect(limitarEntrada(8, 8, 0.1)).toBeCloseTo(7.9, 6);
+    expect(limitarSalida(3, 3, 0.1, 12)).toBeCloseTo(3.1, 6);
   });
 });
 

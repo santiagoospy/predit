@@ -3,7 +3,7 @@
  * pura y asi se pueden probar sin navegador.
  */
 
-/** Un cuadro del archivo, en segundos. Es la separacion minima entre entrada y salida. */
+/** Un cuadro del archivo, en segundos. Es el paso de recorte de un video. */
 export function unCuadro(fps: number): number {
   return 1 / (Number.isFinite(fps) && fps > 0 ? fps : 25);
 }
@@ -20,11 +20,14 @@ export function segundosDesdeX(
 }
 
 /**
- * La entrada nunca alcanza a la salida: siempre queda al menos un cuadro de
+ * La entrada nunca alcanza a la salida: siempre queda al menos un paso de
  * material entre las dos, porque un clip de cero cuadros no se puede exportar.
+ *
+ * `paso` va en segundos, no en fps: es un cuadro en un video (`unCuadro`) y una
+ * decima en la musica, que no tiene cuadros.
  */
-export function limitarEntrada(valor: number, trimOut: number, fps: number): number {
-  const maximo = Math.max(0, trimOut - unCuadro(fps));
+export function limitarEntrada(valor: number, trimOut: number, paso: number): number {
+  const maximo = Math.max(0, trimOut - paso);
   return Math.max(0, Math.min(maximo, valor));
 }
 
@@ -32,10 +35,10 @@ export function limitarEntrada(valor: number, trimOut: number, fps: number): num
 export function limitarSalida(
   valor: number,
   trimIn: number,
-  fps: number,
+  paso: number,
   duracion: number,
 ): number {
-  const minimo = Math.min(duracion, trimIn + unCuadro(fps));
+  const minimo = Math.min(duracion, trimIn + paso);
   return Math.min(duracion, Math.max(minimo, valor));
 }
 

@@ -47,6 +47,8 @@ export interface MusicTrack {
   duracionSeconds: number;
   /** Desde que segundo del tema arranca la musica en la linea de tiempo. */
   startInMusic: number;
+  /** En que segundo del tema corta. Es la marca de salida, igual que en el video. */
+  endInMusic: number;
   volume: number;
   fadeIn: number;
   fadeOut: number;

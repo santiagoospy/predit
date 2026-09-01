@@ -41,6 +41,8 @@ export interface MixMusic {
   buffer: AudioBuffer;
   /** Desde que segundo del tema arranca la musica en la linea de tiempo. */
   startInMusic: number;
+  /** En que segundo del tema corta. */
+  endInMusic: number;
   volume: number;
   fadeIn: number;
   fadeOut: number;
@@ -104,8 +106,10 @@ export function planMix(
 
   if (music && music.volume > 0 && totalSeconds > 0) {
     const offset = Math.max(0, Math.min(music.startInMusic, music.buffer.duration));
-    // Lo que queda de tema desde ese punto, sin pasarse del largo del video.
-    const duracion = Math.min(music.buffer.duration - offset, totalSeconds);
+    // La salida marcada, sin pasarse ni del archivo ni de la entrada.
+    const hasta = Math.max(offset, Math.min(music.endInMusic, music.buffer.duration));
+    // El pedazo elegido del tema, sin pasarse del largo del video.
+    const duracion = Math.min(hasta - offset, totalSeconds);
     if (duracion > 0) {
       const mitad = duracion / 2;
       events.push({

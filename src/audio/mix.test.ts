@@ -21,6 +21,8 @@ function clip(outputDuration: number, opciones: Partial<MixClip> = {}): MixClip 
 const musica = (segundos: number, opciones: Partial<MixMusic> = {}): MixMusic => ({
   buffer: buffer(segundos),
   startInMusic: 0,
+  // Un tema recien cargado entra entero: la salida arranca en el final.
+  endInMusic: segundos,
   volume: 0.8,
   fadeIn: 0,
   fadeOut: 1.5,
@@ -67,6 +69,11 @@ describe('planMix', () => {
     expect(totalSeconds).toBe(7);
     expect(events).toHaveLength(1);
     expect(events[0]!.timelineStart).toBe(4);
+  });
+
+  it('el volumen del clip llega a la mezcla como ganancia', () => {
+    const { events } = planMix([clip(4, { volume: 0.4 })], null);
+    expect(events[0]!.gain).toBe(0.4);
   });
 
   it('un clip en silencio no genera evento', () => {
@@ -117,6 +124,29 @@ describe('planMix', () => {
   it('no genera pista si la musica arranca despues del final del tema', () => {
     const { events } = planMix([clip(60)], musica(30, { startInMusic: 30 }));
     expect(events).toHaveLength(1); // solo el clip
+  });
+
+  it('corta en la marca de salida aunque el video siga', () => {
+    const { events } = planMix([clip(60)], musica(180, { startInMusic: 42, endInMusic: 70 }));
+    const pista = events.at(-1)!;
+
+    expect(pista.offsetInBuffer).toBe(42);
+    expect(pista.duration).toBe(28);
+  });
+
+  it('una salida mas alla del archivo se recorta al archivo', () => {
+    const { events } = planMix([clip(60)], musica(30, { endInMusic: 999 }));
+    expect(events.at(-1)!.duration).toBe(30);
+  });
+
+  it('una salida antes de la entrada no genera pista, no una duracion negativa', () => {
+    const { events } = planMix([clip(60)], musica(180, { startInMusic: 50, endInMusic: 20 }));
+    expect(events).toHaveLength(1); // solo el clip
+  });
+
+  it('el pedazo elegido se corta igual si el video termina antes', () => {
+    const { events } = planMix([clip(10)], musica(180, { startInMusic: 42, endInMusic: 120 }));
+    expect(events.at(-1)!.duration).toBe(10);
   });
 
   it('recorta los fundidos para que no se pisen en un tema corto', () => {
