@@ -564,13 +564,25 @@ export function App() {
     arrastre.current = null;
   }, []);
 
+  /**
+   * El tamano del lienzo sigue al PRESET, no al clip.
+   *
+   * Estaba adentro del bucle de dibujo, que arranca con un return si no hay clip
+   * seleccionado. Sin ese resize el canvas se queda con su tamano por defecto
+   * -300x150, o sea 2:1- mientras el CSS le impone una caja con el aspectRatio
+   * del preset, y el navegador estira ese bufer para llenarla. Eso es un cuadro
+   * aplastado, y se nota mas en 9:16 porque es donde mas difieren las dos
+   * proporciones.
+   */
+  useEffect(() => {
+    rendererRef.current?.resize(previewSize.width, previewSize.height);
+  }, [previewSize]);
+
   // Bucle de dibujo: cada cuadro que entrega el decodificador pasa por el shader.
   useEffect(() => {
     const video = videoRef.current;
     const renderer = rendererRef.current;
     if (!video || !renderer || !selected) return;
-
-    renderer.resize(previewSize.width, previewSize.height);
 
     let stop = false;
     let handle = 0;

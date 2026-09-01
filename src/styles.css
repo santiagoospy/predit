@@ -103,6 +103,9 @@ body {
      quede lugar debajo para deslizar hasta los controles y para ver el
      encuadre completo (con lo que sobra) en vez de solo el centro. */
   height: min(42dvh, 420px);
+  /* No se comprime aunque la pila de paneles de abajo crezca: es un item de un
+     flex column, y sin esto encogeria y le achataria la caja al lienzo. */
+  flex-shrink: 0;
   padding: 14px 18px;
 }
 
@@ -131,6 +134,11 @@ body {
   display: block;
   border-radius: var(--radio-lg);
   background: #000;
+  /* Red de seguridad: si la caja CSS no coincide con la proporcion del bufer del
+     canvas, el cuadro se enmarca en negro en vez de deformarse. Un canvas es un
+     elemento reemplazado, asi que object-fit le aplica igual que a una imagen.
+     Con las dos proporciones iguales -el caso normal- no hace nada. */
+  object-fit: contain;
 }
 
 .vacio {
