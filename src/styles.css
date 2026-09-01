@@ -1,12 +1,38 @@
+/*
+ * Sistema visual "IDE": tipografia monoespaciada, superficies planas separadas
+ * solo por bordes, acento azul apagado. Sale del handoff de diseño que esta en
+ * grafica/Mockup opciones app Predit/design_handoff_predit_ide_style/.
+ *
+ * Una desviacion deliberada del mock: los tamaños tocables. El mock esta pensado
+ * como panel lateral de escritorio (texto de 10px, botones de 22px de alto) y
+ * esto se usa con el dedo, asi que el texto va a 11-13px y nada que se toque
+ * baja de ~40px de alto.
+ */
+
 :root {
-  --fondo: #0b0b0d;
-  --panel: #151519;
-  --borde: #2a2a32;
-  --texto: #e8e8ec;
-  --tenue: #8b8b96;
-  --acento: #4b9fff;
-  --aviso: #f0b429;
-  --error: #ff6b6b;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --fondo: #141416;
+  --panel: #1e1e20;
+  --superficie: #242428;
+  --borde: #33333a;
+  --borde-tenue: #2c2c30;
+  --borde-vivo: #43434c;
+  --texto: #f0f0f2;
+  --texto-2: #c9c9cc;
+  --tenue: #8a8a90;
+  --comentario: #7a8ba0;
+  --acento: #5c8bb0;
+  --acento-2: #c98a5c;
+  /* El tramo que sobrevive al recorte. */
+  --relleno: #3a4a58;
+  --error: #c96c6c;
+  --ok: #7fa87f;
+
+  --radio: 5px;
+  --radio-lg: 6px;
+  --radio-card: 8px;
+
   color-scheme: dark;
 }
 
@@ -18,8 +44,8 @@ html,
 body {
   margin: 0;
   background: var(--fondo);
-  color: var(--texto);
-  font: 15px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  color: var(--texto-2);
+  font: 13px/1.45 var(--mono);
   -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
 }
@@ -29,27 +55,43 @@ body {
   flex-direction: column;
   /* dvh y no vh: en iOS la barra del navegador cambia de alto al hacer scroll. */
   min-height: 100dvh;
+  max-width: 420px;
+  margin: 0 auto;
+  background: var(--panel);
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
+}
+
+/* Con ancho de sobra la app se despega del borde y queda como la card del mock.
+   En el telefono no entra en este ancho y sigue a pantalla completa. */
+@media (min-width: 520px) {
+  .app {
+    min-height: 0;
+    margin: 24px auto;
+    border: 1px solid var(--borde);
+    border-radius: var(--radio-card);
+  }
 }
 
 .barra {
   display: flex;
   align-items: baseline;
+  justify-content: space-between;
   gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--borde);
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--borde-tenue);
 }
 
 .barra h1 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--texto);
 }
 
 .subtitulo {
-  color: var(--tenue);
-  font-size: 13px;
+  color: var(--comentario);
+  font-size: 11px;
 }
 
 .visor {
@@ -61,14 +103,14 @@ body {
      quede lugar debajo para deslizar hasta los controles y para ver el
      encuadre completo (con lo que sobra) en vez de solo el centro. */
   height: min(42dvh, 420px);
-  padding: 14px 20px;
+  padding: 14px 18px;
 }
 
 .lienzo {
   max-width: 100%;
   max-height: 100%;
   display: block;
-  border-radius: 6px;
+  border-radius: var(--radio-lg);
   background: #000;
 }
 
@@ -76,11 +118,13 @@ body {
   position: absolute;
   text-align: center;
   color: var(--tenue);
+  font-size: 12px;
   padding: 0 24px;
 }
 
 .vacio small {
   color: #5c5c66;
+  font-size: 11px;
 }
 
 /* El <video> solo decodifica; lo que se ve es el canvas. */
@@ -95,110 +139,154 @@ body {
 .controles {
   display: flex;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px 18px;
 }
+
+/* --- Botones --- */
 
 button {
   flex: 1;
-  padding: 12px;
-  border-radius: 10px;
+  /* El minimo tocable: el mock los deja en 22px, que con el dedo no va. */
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: var(--radio);
   border: 1px solid var(--borde);
-  background: var(--panel);
-  color: var(--texto);
-  font: inherit;
-  font-weight: 500;
+  background: transparent;
+  color: var(--tenue);
+  font: 500 12px/1.2 var(--mono);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
 
+button:hover:not(:disabled) {
+  border-color: var(--borde-vivo);
+  color: var(--texto-2);
+}
+
+button:focus-visible,
+.recortador-manija:focus-visible {
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
 button:disabled {
   opacity: 0.4;
+  cursor: default;
+}
+
+/* Lo seleccionado se marca con contorno, no con relleno: el unico relleno del
+   sistema es el de las acciones primarias. */
+button.activo {
+  border-color: var(--acento);
+  color: var(--acento);
 }
 
 button.principal {
   background: var(--acento);
   border-color: var(--acento);
-  color: #04121f;
+  color: var(--panel);
+  font-weight: 600;
 }
 
-button.activo {
-  background: #303038;
+button.principal:hover:not(:disabled) {
+  background: #6c9bc0;
+  border-color: #6c9bc0;
+  color: var(--panel);
+}
+
+button.chico {
+  flex: 0 1 auto;
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+button.grande {
+  margin-top: 4px;
+  min-height: 44px;
+  padding: 12px;
+  font-size: 12px;
 }
 
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 4px 16px 24px;
+  gap: 12px;
+  padding: 4px 18px 20px;
 }
 
-.picker {
+.fila {
   display: flex;
-  gap: 8px;
-  align-items: stretch;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.picker label {
+.botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Dos botones de ancho igual, como el par llenar/bandas del mock. */
+.botones.par button {
   flex: 1;
-  display: block;
-  padding: 12px 14px;
-  border: 1px dashed var(--borde);
-  border-radius: 10px;
-  color: var(--texto);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.picker label.ocupado {
+/* --- Etiquetas --- */
+
+/* Titulo de seccion, en voz de comentario. El // sale de aca y no del JSX. */
+.comentario {
+  color: var(--comentario);
+  font-size: 11px;
+}
+
+.comentario::before {
+  content: '// ';
+}
+
+/* Label inline (entrada, salida, queda): sin // y sin mayusculas. */
+.etiqueta {
   color: var(--tenue);
+  font-size: 11px;
 }
 
-.picker input {
-  display: none;
-}
-
-.picker .quitar {
-  flex: 0 0 44px;
-  padding: 0;
-  font-size: 20px;
-  line-height: 1;
-  color: var(--tenue);
-}
+/* --- Avisos --- */
 
 .aviso,
-.error {
+.error,
+.listo {
   margin: 0;
   padding: 10px 12px;
-  border-radius: 10px;
-  font-size: 13px;
-  border-left: 3px solid;
+  border-radius: var(--radio);
+  background: var(--superficie);
+  color: var(--texto-2);
+  font-size: 12px;
+  border-left: 2px solid;
+  word-break: break-word;
 }
 
 .aviso {
-  background: #2a2312;
-  border-color: var(--aviso);
-  color: #f3d79a;
+  border-color: var(--acento-2);
 }
 
 .error {
-  background: #2a1414;
   border-color: var(--error);
-  color: #ffb3b3;
+}
+
+.listo {
+  border-color: var(--ok);
 }
 
 .diagnostico {
   border: 1px solid var(--borde);
-  border-radius: 10px;
+  border-radius: var(--radio);
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .diagnostico summary {
   cursor: pointer;
-  color: var(--tenue);
 }
 
 .diagnostico table {
@@ -218,42 +306,12 @@ button.activo {
 
 .diagnostico td {
   padding: 3px 0;
+  color: var(--texto-2);
   font-variant-numeric: tabular-nums;
   word-break: break-word;
 }
 
-.fila {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.etiqueta {
-  color: var(--tenue);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.botones {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-button.chico {
-  flex: 0 1 auto;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 400;
-}
-
-button.grande {
-  margin-top: 6px;
-  padding: 15px;
-  font-size: 16px;
-  font-weight: 600;
-}
+/* --- Deslizadores --- */
 
 .deslizador {
   display: grid;
@@ -262,15 +320,15 @@ button.grande {
   gap: 4px 10px;
 }
 
-.deslizador .etiqueta {
+.deslizador .comentario {
   grid-column: 1;
 }
 
 .deslizador .valor {
   grid-column: 2;
   grid-row: 1 / span 2;
-  color: var(--texto);
-  font-size: 13px;
+  color: var(--texto-2);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   min-width: 72px;
   text-align: right;
@@ -285,10 +343,18 @@ button.grande {
   height: 28px;
 }
 
+.deslizador.apagado {
+  opacity: 0.4;
+}
+
+.deslizador.apagado input[type='range'] {
+  cursor: not-allowed;
+}
+
 .barra-progreso {
   height: 6px;
   border-radius: 3px;
-  background: var(--panel);
+  background: var(--borde-tenue);
   overflow: hidden;
 }
 
@@ -298,16 +364,7 @@ button.grande {
   transition: width 0.15s linear;
 }
 
-.listo {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border-left: 3px solid #35c46b;
-  background: #12261a;
-  color: #a4e7bd;
-  font-size: 13px;
-  word-break: break-word;
-}
+/* --- Visor: arrastre para reencuadrar --- */
 
 .lienzo.arrastrable {
   cursor: grab;
@@ -319,21 +376,21 @@ button.grande {
   cursor: grabbing;
 }
 
+/* La pista del mock es un comentario suelto sobre la imagen, sin pildora. */
 .pista {
   position: absolute;
-  bottom: 10px;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
   margin: 0;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(6px);
-  color: #d8d8de;
-  font-size: 12px;
+  color: var(--tenue);
+  font-size: 11px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* --- Tira de clips --- */
 
 .tira {
   display: flex;
@@ -342,49 +399,44 @@ button.grande {
   /* pan-x: dejar que el navegador scrollee horizontal la tira sin robarle
      el gesto vertical a la pagina. */
   touch-action: pan-x;
-  padding: 4px 16px 10px;
+  padding: 4px 18px 10px;
   -webkit-overflow-scrolling: touch;
 }
 
 .tira-clip {
   flex: 0 0 auto;
-  width: 104px;
+  /* Mas ancho que antes: el nombre y la duracion van en la misma linea. */
+  width: 128px;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 8px;
-  border-radius: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radio);
   border: 1px solid var(--borde);
-  background: var(--panel);
+  background: var(--superficie);
   cursor: pointer;
 }
 
 .tira-clip.activo {
   border-color: var(--acento);
-  background: #16232f;
 }
 
 .tira-clip .num {
   font-size: 11px;
-  color: var(--tenue);
+  color: var(--acento-2);
   font-variant-numeric: tabular-nums;
 }
 
 .aviso-badge {
-  color: var(--aviso);
+  color: var(--acento-2);
 }
 
 .tira-clip .nombre {
-  font-size: 12px;
+  font-size: 11px;
+  color: var(--texto-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tira-clip .duracion {
-  font-size: 11px;
-  color: var(--tenue);
-  font-variant-numeric: tabular-nums;
 }
 
 .tira-clip .acciones {
@@ -393,23 +445,26 @@ button.grande {
   margin-top: 2px;
 }
 
+/* Mas chicos que el minimo tocable a proposito: van dentro de un chip que ya es
+   tocable entero, y agrandarlos empujaria la tira a ocupar media pantalla. */
 .tira-clip .acciones button {
   flex: 1;
-  padding: 5px 0;
-  font-size: 12px;
-  border-radius: 6px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 11px;
+  border-radius: 4px;
 }
 
 .tira-agregar {
   flex: 0 0 auto;
-  width: 104px;
+  width: 88px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: var(--radio);
   border: 1px dashed var(--borde);
   color: var(--tenue);
-  font-size: 13px;
+  font-size: 11px;
   cursor: pointer;
   text-align: center;
 }
@@ -425,7 +480,19 @@ button.grande {
 label.chico {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: var(--radio);
+  border: 1px solid var(--borde);
+  color: var(--tenue);
+  font-size: 11px;
   cursor: pointer;
+}
+
+label.chico:hover {
+  border-color: var(--borde-vivo);
+  color: var(--texto-2);
 }
 
 label.chico input {
@@ -433,15 +500,8 @@ label.chico input {
 }
 
 label.chico.ocupado {
-  opacity: 0.5;
-}
-
-.deslizador.apagado {
   opacity: 0.4;
-}
-
-.deslizador.apagado input[type='range'] {
-  cursor: not-allowed;
+  cursor: default;
 }
 
 /* --- Barra de recorte --- */
@@ -449,7 +509,7 @@ label.chico.ocupado {
 .recortador {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .recortador-tiempos {
@@ -463,7 +523,7 @@ label.chico.ocupado {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: 3px;
 }
 
 .recortador-marca.centrada {
@@ -475,9 +535,17 @@ label.chico.ocupado {
 }
 
 .recortador-valor {
-  font-size: 20px;
-  line-height: 1.1;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--texto-2);
   font-variant-numeric: tabular-nums;
+}
+
+/* El unico dato resaltado del readout, como en el mock: ahi el bloque del medio
+   va entero en acento, etiqueta incluida. */
+.recortador-marca.centrada .etiqueta,
+.recortador-marca.centrada .recortador-valor {
+  color: var(--acento);
 }
 
 .recortador-nota {
@@ -493,22 +561,33 @@ label.chico.ocupado {
 
 .recortador-cuadros button {
   flex: 0 0 auto;
-  min-width: 44px;
-  padding: 7px 0;
-  font-size: 12px;
-  line-height: 1;
+  min-width: 40px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 11px;
 }
 
+/* El contenedor queda alto para el dedo aunque la pista se vea fina: el
+   hit-test de Recortador.tsx mide sobre este rectangulo. */
 .recortador-barra {
   position: relative;
-  /* Alto generoso: es la herramienta de corte y se maneja con el dedo. */
   height: 44px;
-  border-radius: 10px;
-  border: 1px solid var(--borde);
-  background: var(--panel);
   cursor: pointer;
   /* Sin esto, iOS interpreta el arrastre como scroll de la pagina. */
   touch-action: none;
+}
+
+/* La pista visible: 6px centrados, como el mock. */
+.recortador-barra::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
+  background: var(--borde-tenue);
 }
 
 .recortador-barra.apagada {
@@ -516,57 +595,56 @@ label.chico.ocupado {
   cursor: default;
 }
 
-/* Lo que sobrevive al corte. Los costados quedan al color del panel: descartado. */
+/* Lo que sobrevive al corte. Los costados quedan al color de la pista: descartado. */
 .recortador-queda {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  background: rgba(75, 159, 255, 0.22);
-  border-left: 2px solid var(--acento);
-  border-right: 2px solid var(--acento);
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 3px;
+  background: var(--relleno);
   pointer-events: none;
 }
 
 .recortador-cabezal {
   position: absolute;
-  top: -3px;
-  bottom: -3px;
+  top: 50%;
+  height: 12px;
+  margin-top: -6px;
   width: 2px;
   margin-left: -1px;
   border-radius: 1px;
-  background: var(--texto);
+  background: var(--acento);
   pointer-events: none;
 }
 
-/* El toque lo resuelve la barra por geometria, asi que la manija no lo intercepta. */
+/* El toque lo resuelve la barra por geometria (con 22px de tolerancia), asi que
+   la manija puede verse fina sin volverse dificil de agarrar. */
 .recortador-manija {
   position: absolute;
   top: 50%;
-  width: 14px;
-  height: 34px;
-  margin-left: -7px;
+  width: 3px;
+  height: 18px;
+  margin-left: -1.5px;
   transform: translateY(-50%);
-  border-radius: 4px;
+  border-radius: 2px;
   background: var(--acento);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   pointer-events: none;
-}
-
-.recortador-manija:focus-visible {
-  outline: 2px solid var(--texto);
-  outline-offset: 2px;
 }
 
 .recortador-pie {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* Envuelve porque la barra de musica suma el boton de escuchar y en un
+     telefono angosto los cuatro no entran en una linea. */
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .recortador-posicion {
   margin-left: auto;
   color: var(--tenue);
-  font-size: 13px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

@@ -5,6 +5,7 @@ import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
 import { Recortador } from './edit/Recortador';
+import { unCuadro } from './edit/trim';
 import {
   clipOutputDuration,
   nextId,
@@ -36,6 +37,12 @@ import {
 /** El preview no necesita mas de esto; ahorra bateria y memoria en el telefono. */
 const PREVIEW_MAX_SIDE = 1280;
 
+/**
+ * El ajuste fino de la barra de musica. Un video se corta al cuadro; un tema no
+ * tiene cuadros, y la decima es lo mas chico que el oido distingue en un corte.
+ */
+const PASO_MUSICA = 0.1;
+
 export function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -47,15 +54,24 @@ export function App() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const musicNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const musicGainRef = useRef<GainNode | null>(null);
+  const musicRafRef = useRef<number | null>(null);
+  const musicRef = useRef<MusicTrack | null>(null);
+  /** Desde donde arranco la escucha y en que momento del contexto: da el cabezal. */
+  const musicAnchorRef = useRef<{ desde: number; ctxTime: number } | null>(null);
 
   const [clips, setClips] = useState<TimelineClip[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lutLibrary, setLutLibrary] = useState<LibraryLut[]>([]);
   const [music, setMusic] = useState<MusicTrack | null>(null);
   const [musicBusy, setMusicBusy] = useState(false);
+  /** El cabezal de la barra de musica, en segundos del tema. */
+  const [musicTime, setMusicTime] = useState(0);
+  const [musicPlaying, setMusicPlaying] = useState(false);
   const [preset, setPreset] = useState<ExportPreset>(DEFAULT_PRESET);
   const [currentTime, setCurrentTime] = useState(0);
   const [bypass, setBypass] = useState(false);
+  /** Si el visor deja bajarle el volumen al clip. En iOS no. */
+  const [volumenAjustable, setVolumenAjustable] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,6 +81,9 @@ export function App() {
 
   bypassRef.current = bypass;
   clipsRef.current = clips;
+  // El bucle que mueve el cabezal lee de aca, no de la clausura: si no, marcar
+  // la salida mientras suena el tema no frenaria hasta la salida vieja.
+  musicRef.current = music;
 
   const selected = clips.find((c) => c.id === selectedId) ?? null;
   const lutConv = selected ? (lutLibrary.find((l) => l.id === selected.lutConvId) ?? null) : null;
@@ -79,6 +98,8 @@ export function App() {
   const panX = selected?.panX ?? 0;
   const panY = selected?.panY ?? 0;
   const volume = selected?.volume ?? 1;
+  /** Los segundos de material que sobreviven al recorte, antes de la velocidad. */
+  const material = Math.max(0, trimOut - trimIn);
 
   /** Si el clip seleccionado va a sonar con su propio audio, o queda mudo. */
   const usaSuAudio = selected
@@ -140,7 +161,19 @@ export function App() {
     return audioCtxRef.current;
   }, []);
 
+  /**
+   * Corta cualquier musica que este sonando, sea la de la linea de tiempo o la
+   * escucha suelta de la barra. Como es una sola cadena de nodos, las dos no se
+   * pueden pisar: la que arranca ultima manda.
+   */
   const detenerMusica = useCallback(() => {
+    if (musicRafRef.current !== null) {
+      cancelAnimationFrame(musicRafRef.current);
+      musicRafRef.current = null;
+    }
+    musicAnchorRef.current = null;
+    setMusicPlaying(false);
+
     const nodo = musicNodeRef.current;
     if (!nodo) return;
     try {
@@ -164,7 +197,7 @@ export function App() {
       if (!music || music.volume <= 0) return;
 
       const desde = music.startInMusic + posicionEnLaLinea;
-      if (desde < 0 || desde >= music.buffer.duration) return;
+      if (desde < 0 || desde >= music.endInMusic) return;
 
       const ctx = getAudioCtx();
       const fuente = ctx.createBufferSource();
@@ -172,10 +205,65 @@ export function App() {
       const ganancia = ctx.createGain();
       ganancia.gain.value = music.volume;
       fuente.connect(ganancia).connect(ctx.destination);
-      fuente.start(0, desde);
+      // Con la duracion, para que la musica corte en la marca de salida.
+      fuente.start(0, desde, music.endInMusic - desde);
 
       musicNodeRef.current = fuente;
       musicGainRef.current = ganancia;
+    },
+    [music, detenerMusica, getAudioCtx],
+  );
+
+  /**
+   * Escucha el tema solo, sin el video, para poder marcar entrada y salida de
+   * oido. Es el equivalente a reproducir el clip mientras se lo recorta: sin
+   * esto hay que adivinar donde cae el estribillo.
+   */
+  const escucharMusica = useCallback(
+    (desde: number) => {
+      // El video se pausa: dos audios encima no dejan marcar nada.
+      videoRef.current?.pause();
+      setPlaying(false);
+      detenerMusica();
+      if (!music) return;
+
+      const hasta = music.endInMusic;
+      const arranque = desde < music.startInMusic || desde >= hasta ? music.startInMusic : desde;
+      if (arranque >= hasta) return;
+
+      const ctx = getAudioCtx();
+      const fuente = ctx.createBufferSource();
+      fuente.buffer = music.buffer;
+      const ganancia = ctx.createGain();
+      ganancia.gain.value = music.volume;
+      fuente.connect(ganancia).connect(ctx.destination);
+      fuente.start(0, arranque, hasta - arranque);
+
+      musicNodeRef.current = fuente;
+      musicGainRef.current = ganancia;
+      musicAnchorRef.current = { desde: arranque, ctxTime: ctx.currentTime };
+      setMusicPlaying(true);
+      setMusicTime(arranque);
+
+      const seguir = () => {
+        const ancla = musicAnchorRef.current;
+        const actual = musicRef.current;
+        if (!ancla || !actual) return;
+        // El nodo ya tiene programado su corte en `hasta`, asi que mover la
+        // salida mas adelante mientras suena no lo alarga: frena en el primero
+        // de los dos. Moverla antes si acorta, y ahi frena el bucle.
+        const limite = Math.min(hasta, actual.endInMusic);
+        const posicion = ancla.desde + (ctx.currentTime - ancla.ctxTime);
+        if (posicion >= limite) {
+          // Al llegar a la salida vuelve a la entrada, igual que el video.
+          detenerMusica();
+          setMusicTime(actual.startInMusic);
+          return;
+        }
+        setMusicTime(posicion);
+        musicRafRef.current = requestAnimationFrame(seguir);
+      };
+      musicRafRef.current = requestAnimationFrame(seguir);
     },
     [music, detenerMusica, getAudioCtx],
   );
@@ -234,6 +322,21 @@ export function App() {
     video.addEventListener('loadedmetadata', apply, { once: true });
     return () => video.removeEventListener('loadedmetadata', apply);
   }, [selectedId]);
+
+  /**
+   * En el iPhone y el iPad `video.volume` es de solo lectura: la asignacion se
+   * ignora sin tirar error y al leerla siempre vuelve 1, porque ahi el volumen
+   * lo maneja el boton fisico. No hay forma de preguntarlo, asi que se prueba
+   * en caliente una sola vez: se escribe un valor y se lee de vuelta.
+   */
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const previo = video.volume;
+    video.volume = 0.5;
+    setVolumenAjustable(Math.abs(video.volume - 0.5) < 1e-6);
+    video.volume = previo;
+  }, []);
 
   // El sonido del clip y su velocidad de reproduccion. Sin el playbackRate, la
   // camara lenta no se veia hasta exportar y la musica se desincronizaba.
@@ -517,10 +620,12 @@ export function App() {
           buffer,
           duracionSeconds: buffer.duration,
           startInMusic: 0,
+          endInMusic: buffer.duration,
           volume: 0.8,
           fadeIn: 0,
           fadeOut: 1.5,
         });
+        setMusicTime(0);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -533,6 +638,7 @@ export function App() {
   const quitarMusica = useCallback(() => {
     detenerMusica();
     setMusic(null);
+    setMusicTime(0);
   }, [detenerMusica]);
 
   const togglePlay = useCallback(() => {
@@ -613,7 +719,7 @@ export function App() {
     <div className="app">
       <header className="barra">
         <h1>Predit</h1>
-        <span className="subtitulo">{preset.nombre}</span>
+        <span className="subtitulo">{preset.slug}</span>
       </header>
 
       <main className="visor">
@@ -627,11 +733,11 @@ export function App() {
           onPointerCancel={onArrastreFin}
         />
         {selected && sePuedeReencuadrar && (
-          <p className="pista">Arrastrá la imagen para reencuadrar</p>
+          <p className="pista">/* arrastrá la imagen para reencuadrar */</p>
         )}
         {!selected && (
           <p className="vacio">
-            Importá un clip para empezar.
+            importá un clip para empezar.
             <br />
             <small>Proxy de la FX6, GoPro o DJI. Los MXF no se pueden abrir en el teléfono.</small>
           </p>
@@ -651,7 +757,7 @@ export function App() {
       {selected && (
         <div className="controles">
           <button onClick={togglePlay} className="principal" disabled={exportando}>
-            {playing ? 'Pausa' : 'Reproducir'}
+            {playing ? 'pausar()' : 'reproducir()'}
           </button>
           <button
             className={bypass ? 'activo' : ''}
@@ -660,7 +766,7 @@ export function App() {
             onPointerLeave={() => setBypass(false)}
             disabled={(!lutConv && !lutLook) || exportando}
           >
-            Sin LUT
+            sin lut
           </button>
         </div>
       )}
@@ -681,7 +787,7 @@ export function App() {
           />
         ))}
         <label className={`tira-agregar${busy ? ' ocupado' : ''}`}>
-          {busy ? 'Leyendo…' : '+ Clip'}
+          {busy ? 'leyendo…' : '+ clip'}
           <input
             type="file"
             accept="video/*"
@@ -701,15 +807,21 @@ export function App() {
             trimIn={trimIn}
             trimOut={trimOut}
             currentTime={currentTime}
-            fps={sourceFps}
-            speed={speed}
+            paso={unCuadro(sourceFps)}
+            nombrePaso="un cuadro"
+            centro={{
+              etiqueta: 'queda',
+              valor: `${(speed > 0 ? material / speed : material).toFixed(1)}s`,
+              nota:
+                Math.abs(speed - 1) > 1e-6 ? `${material.toFixed(1)}s de material` : undefined,
+            }}
             deshabilitado={exportando}
             onTrim={updateSelected}
             onSeek={seek}
           />
 
           <div className="fila">
-            <span className="etiqueta">Velocidad</span>
+            <span className="comentario">velocidad</span>
             <div className="botones">
               <button
                 className={Math.abs(speed - velocidadConforme) < 1e-6 ? 'activo chico' : 'chico'}
@@ -717,7 +829,7 @@ export function App() {
                 disabled={exportando}
                 title={`Cada cuadro del archivo ocupa un cuadro de la salida (${sourceFps} → ${DEFAULT_FRAME_RATE})`}
               >
-                Conformar a {DEFAULT_FRAME_RATE}p
+                {DEFAULT_FRAME_RATE}p
               </button>
               {[0.25, 0.5, 1, 2].map((v) => (
                 <button
@@ -726,14 +838,14 @@ export function App() {
                   onClick={() => updateSelected({ speed: v })}
                   disabled={exportando}
                 >
-                  {v}×
+                  {v}x
                 </button>
               ))}
             </div>
           </div>
 
           <Deslizador
-            etiqueta="Sonido del clip"
+            etiqueta="sonido del clip"
             valor={volume}
             max={1}
             paso={0.01}
@@ -752,6 +864,14 @@ export function App() {
             }
           />
 
+          {!volumenAjustable && usaSuAudio && volume < 1 && (
+            <p className="aviso">
+              En el iPhone y el iPad el visor no puede bajar el volumen: lo maneja el botón del
+              teléfono. Acá el clip se escucha normal, pero en el MP4 exportado sí sale al{' '}
+              {Math.round(volume * 100)}%.
+            </p>
+          )}
+
           {selected.info.hasAudio && selected.info.audioCanDecode && Math.abs(speed - 1) > 1e-6 && (
             <p className="aviso">
               El sonido de este clip se silencia porque tiene la velocidad cambiada: estirarlo
@@ -768,21 +888,21 @@ export function App() {
           )}
 
           <div className="fila">
-            <span className="etiqueta">Encuadre</span>
-            <div className="botones">
+            <span className="comentario">encuadre</span>
+            <div className="botones par">
               <button
                 className={fit === 'cover' ? 'activo chico' : 'chico'}
                 onClick={() => updateSelected({ fit: 'cover' })}
                 disabled={exportando}
               >
-                Llenar y recortar
+                llenar
               </button>
               <button
                 className={fit === 'contain' ? 'activo chico' : 'chico'}
                 onClick={() => updateSelected({ fit: 'contain' })}
                 disabled={exportando}
               >
-                Entero con bandas
+                bandas
               </button>
             </div>
           </div>
@@ -791,7 +911,7 @@ export function App() {
             <>
               {sobrante.overflowX > 0.001 && (
                 <Deslizador
-                  etiqueta="Reencuadre horizontal"
+                  etiqueta="reencuadre horizontal"
                   valor={panX}
                   min={-1}
                   max={1}
@@ -802,7 +922,7 @@ export function App() {
               )}
               {sobrante.overflowY > 0.001 && (
                 <Deslizador
-                  etiqueta="Reencuadre vertical"
+                  etiqueta="reencuadre vertical"
                   valor={panY}
                   min={-1}
                   max={1}
@@ -817,14 +937,14 @@ export function App() {
                   onClick={() => updateSelected({ panX: 0, panY: 0 })}
                   disabled={exportando}
                 >
-                  Centrar
+                  centrar
                 </button>
               )}
             </>
           )}
 
           <LutChooser
-            etiqueta="LUT de conversión (log → 709)"
+            etiqueta="lut de conversión (log → 709)"
             library={lutLibrary}
             selectedId={selected.lutConvId}
             onSelect={(id) => updateSelected({ lutConvId: id })}
@@ -832,7 +952,7 @@ export function App() {
             deshabilitado={exportando}
           />
           <LutChooser
-            etiqueta="LUT de look (opcional)"
+            etiqueta="lut de look (opcional)"
             library={lutLibrary}
             selectedId={selected.lutLookId}
             onSelect={(id) => updateSelected({ lutLookId: id })}
@@ -853,8 +973,8 @@ export function App() {
       {clips.length > 0 && (
         <section className="panel">
           <div className="fila">
-            <span className="etiqueta">
-              Música
+            <span className="comentario">
+              música
               {music
                 ? ` · ${music.origen === 'clip' ? 'del clip ' : ''}${music.name} ` +
                   `(${formatDuration(music.duracionSeconds)})`
@@ -862,7 +982,7 @@ export function App() {
             </span>
             <div className="botones">
               <label className={`chico${musicBusy || exportando ? ' ocupado' : ''}`}>
-                {musicBusy ? 'Leyendo…' : music ? 'Cambiar audio' : '+ Audio'}
+                {musicBusy ? 'leyendo…' : music ? 'cambiar audio' : '+ audio'}
                 <input
                   type="file"
                   accept="audio/*,video/*"
@@ -885,12 +1005,12 @@ export function App() {
                       : 'Este clip no tiene pista de audio'
                   }
                 >
-                  Usar el audio de este clip
+                  usar audio del clip
                 </button>
               )}
               {music && (
                 <button className="chico" onClick={quitarMusica} disabled={exportando}>
-                  Quitar
+                  quitar
                 </button>
               )}
             </div>
@@ -898,8 +1018,45 @@ export function App() {
 
           {music && (
             <>
+              <Recortador
+                duracion={music.duracionSeconds}
+                trimIn={music.startInMusic}
+                trimOut={music.endInMusic}
+                currentTime={musicTime}
+                // La musica no tiene cuadros: el ajuste fino va de a una decima.
+                paso={PASO_MUSICA}
+                nombrePaso="una décima"
+                centro={{
+                  etiqueta: 'suena',
+                  valor: `${(music.endInMusic - music.startInMusic).toFixed(1)}s`,
+                  nota: `${duracionTotal.toFixed(1)}s de video`,
+                }}
+                accion={
+                  <button
+                    className="chico"
+                    disabled={exportando}
+                    onClick={() => (musicPlaying ? detenerMusica() : escucharMusica(musicTime))}
+                    title={musicPlaying ? 'Pausar el tema' : 'Escuchar el tema desde el cabezal'}
+                  >
+                    {musicPlaying ? '❚❚' : '▶'}
+                  </button>
+                }
+                deshabilitado={exportando}
+                onTrim={(p) => {
+                  if (p.trimIn !== undefined) updateMusic({ startInMusic: p.trimIn });
+                  if (p.trimOut !== undefined) updateMusic({ endInMusic: p.trimOut });
+                }}
+                onSeek={(s) => {
+                  // Tocar la barra pausa: reengancharlo en cada pixel del
+                  // arrastre reiniciaria el tema decenas de veces por segundo.
+                  // Para marcar escuchando estan "Entrada acá" / "Salida acá",
+                  // que no mueven el cabezal.
+                  if (musicPlaying) detenerMusica();
+                  setMusicTime(s);
+                }}
+              />
               <Deslizador
-                etiqueta="Volumen de la música"
+                etiqueta="volumen de la música"
                 valor={music.volume}
                 max={1}
                 paso={0.01}
@@ -907,24 +1064,18 @@ export function App() {
                 texto={music.volume === 0 ? 'muda' : `${Math.round(music.volume * 100)}%`}
               />
               <Deslizador
-                etiqueta="Empieza en"
-                valor={music.startInMusic}
-                max={Math.max(0, music.duracionSeconds - 1)}
-                onChange={(v) => updateMusic({ startInMusic: v })}
-                texto={formatDuration(music.startInMusic)}
-              />
-              <Deslizador
-                etiqueta="Fundido de salida"
+                etiqueta="fundido de salida"
                 valor={music.fadeOut}
                 max={5}
                 paso={0.1}
                 onChange={(v) => updateMusic({ fadeOut: v })}
                 texto={music.fadeOut === 0 ? 'sin fundido' : `${music.fadeOut.toFixed(1)} s`}
               />
-              {music.duracionSeconds - music.startInMusic < duracionTotal && (
+              {music.endInMusic - music.startInMusic < duracionTotal && (
                 <p className="aviso">
-                  El tema alcanza para {formatDuration(music.duracionSeconds - music.startInMusic)}{' '}
-                  de los {formatDuration(duracionTotal)} del video: el resto queda sin música.
+                  El pedazo elegido dura{' '}
+                  {formatDuration(music.endInMusic - music.startInMusic)} de los{' '}
+                  {formatDuration(duracionTotal)} del video: el resto queda sin música.
                 </p>
               )}
             </>
@@ -935,7 +1086,7 @@ export function App() {
       {clips.length > 0 && (
         <section className="panel">
           <div className="fila">
-            <span className="etiqueta">Salida</span>
+            <span className="comentario">salida</span>
             <div className="botones">
               {EXPORT_PRESETS.map((p) => (
                 <button
@@ -945,7 +1096,7 @@ export function App() {
                   disabled={exportando}
                   title={p.detalle}
                 >
-                  {p.nombre}
+                  {p.slug}
                 </button>
               ))}
             </div>
@@ -953,10 +1104,10 @@ export function App() {
 
           <button className="principal grande" onClick={() => void onExport()} disabled={exportando}>
             {!exportando
-              ? `Exportar MP4 · ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${duracionTotal.toFixed(1)} s`
+              ? `exportar mp4 · ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${duracionTotal.toFixed(1)}s →`
               : progress?.fase === 'audio'
-                ? 'Preparando el audio…'
-                : `Exportando clip ${(progress?.clipIndex ?? 0) + 1} de ${progress?.clipCount ?? clips.length} · ${Math.round((progress?.fraction ?? 0) * 100)}%`}
+                ? 'preparando el audio…'
+                : `exportando clip ${(progress?.clipIndex ?? 0) + 1} de ${progress?.clipCount ?? clips.length} · ${Math.round((progress?.fraction ?? 0) * 100)}%`}
           </button>
 
           {exportando && (
@@ -1008,7 +1159,7 @@ function ClipCard({
   return (
     <div className={`tira-clip${activo ? ' activo' : ''}`} onClick={onSelect}>
       <span className="num">
-        {index + 1}
+        {String(index + 1).padStart(2, '0')}
         {clip.warnings.length > 0 && (
           <span className="aviso-badge" title={clip.warnings.join(' ')}>
             {' '}
@@ -1016,8 +1167,9 @@ function ClipCard({
           </span>
         )}
       </span>
-      <span className="nombre">{clip.info.name}</span>
-      <span className="duracion">{formatDuration(clipOutputDuration(clip))}</span>
+      <span className="nombre">
+        {clip.info.name} · {formatDuration(clipOutputDuration(clip))}
+      </span>
       <div className="acciones">
         <button
           onClick={(e) => {
@@ -1068,14 +1220,14 @@ function LutChooser({
 }) {
   return (
     <div className="fila">
-      <span className="etiqueta">{etiqueta}</span>
+      <span className="comentario">{etiqueta}</span>
       <div className="botones">
         <button
           className={selectedId === null ? 'activo chico' : 'chico'}
           onClick={() => onSelect(null)}
           disabled={deshabilitado}
         >
-          Ninguno
+          ninguno
         </button>
         {library.map((l) => (
           <button
@@ -1126,7 +1278,7 @@ function Deslizador({
 }) {
   return (
     <label className={`deslizador${deshabilitado ? ' apagado' : ''}`}>
-      <span className="etiqueta">{etiqueta}</span>
+      <span className="comentario">{etiqueta}</span>
       <input
         type="range"
         min={min}
@@ -1179,7 +1331,7 @@ function Diagnostico({ info }: { info: ClipInfo }) {
 
   return (
     <details className="diagnostico">
-      <summary>Diagnóstico del clip</summary>
+      <summary className="comentario">diagnóstico del clip</summary>
       <table>
         <tbody>
           {filas.map(([k, v]) => (

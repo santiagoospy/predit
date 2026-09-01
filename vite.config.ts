@@ -10,15 +10,15 @@ export default defineConfig({
       includeAssets: ['icons/*.png'],
       workbox: {
         // Los .cube tienen que quedar precacheados: la app se usa en modo avion.
-        globPatterns: ['**/*.{js,css,html,png,svg,cube}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,cube,woff2}'],
         maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
       },
       manifest: {
         name: 'Predit',
         short_name: 'Predit',
         description: 'Cortar, aplicar LUT y exportar clips de FX6, GoPro y DJI desde el telefono.',
-        theme_color: '#0b0b0d',
-        background_color: '#0b0b0d',
+        theme_color: '#141416',
+        background_color: '#141416',
         display: 'standalone',
         orientation: 'any',
         start_url: '/',

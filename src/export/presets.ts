@@ -1,6 +1,8 @@
 export interface ExportPreset {
   id: string;
   nombre: string;
+  /** El nombre en voz de codigo, que es como se lo muestra en la interfaz. */
+  slug: string;
   detalle: string;
   width: number;
   height: number;
@@ -14,6 +16,7 @@ export const EXPORT_PRESETS: ExportPreset[] = [
   {
     id: 'v1080',
     nombre: 'Vertical 9:16',
+    slug: 'vertical_9:16',
     detalle: '1080×1920 · sale listo para reel, recortado desde el material',
     width: 1080,
     height: 1920,
@@ -21,6 +24,7 @@ export const EXPORT_PRESETS: ExportPreset[] = [
   {
     id: 'h1080',
     nombre: '1080p horizontal',
+    slug: 'horizontal_16:9',
     detalle: '1920×1080 · liviano de pasar al celular, Edits reencuadra despues',
     width: 1920,
     height: 1080,
@@ -28,6 +32,7 @@ export const EXPORT_PRESETS: ExportPreset[] = [
   {
     id: 'c4x3',
     nombre: 'Clasico 4:3',
+    slug: 'clasico_4:3',
     detalle: '1440×1080 · sale listo en 4:3, recortado desde el material',
     width: 1440,
     height: 1080,
@@ -35,6 +40,7 @@ export const EXPORT_PRESETS: ExportPreset[] = [
   {
     id: 'uhd',
     nombre: 'UHD 4K',
+    slug: 'uhd_4k',
     detalle: '3840×2160 · maxima calidad, archivos grandes',
     width: 3840,
     height: 2160,

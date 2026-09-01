@@ -1,6 +1,6 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, type ReactNode } from 'react';
 
-import { formatSeconds, limitarEntrada, limitarSalida, segundosDesdeX, unCuadro } from './trim';
+import { formatSeconds, limitarEntrada, limitarSalida, segundosDesdeX } from './trim';
 
 /**
  * Cuanto puede errarle el dedo a una manija y agarrarla igual. Un toque mas
@@ -20,29 +20,39 @@ export interface RecortadorProps {
   trimIn: number;
   trimOut: number;
   currentTime: number;
-  /** Cuadros por segundo del archivo: define el ajuste fino y la separacion minima. */
-  fps: number;
-  /** Para poder decir cuanto va a ocupar el clip en el video final. */
-  speed: number;
+  /**
+   * El salto del ajuste fino, en segundos, que es tambien la separacion minima
+   * entre entrada y salida: un cuadro en un video, una decima en la musica.
+   */
+  paso: number;
+  /** Como se lee ese paso en los botones: "Un cuadro", "Una decima". */
+  nombrePaso: string;
+  /** El bloque del medio: lo arma el llamador porque cada uso mide otra cosa. */
+  centro: { etiqueta: string; valor: string; nota?: string };
+  /** Boton extra al principio del pie, como el play propio de la musica. */
+  accion?: ReactNode;
   deshabilitado: boolean;
   onTrim: (patch: { trimIn?: number; trimOut?: number }) => void;
   onSeek: (segundos: number) => void;
 }
 
 /**
- * La barra de recorte del clip: una sola linea de tiempo con la parte que queda
+ * La barra de recorte: una sola linea de tiempo con la parte que queda
  * resaltada, las dos manijas y el cabezal.
  *
  * Reemplaza a tres deslizadores separados de posicion, entrada y salida, que no
- * dejaban ver que parte del clip sobrevivia al corte.
+ * dejaban ver que parte sobrevivia al corte. La usan el video y la musica: es el
+ * mismo gesto en los dos, y siendo un solo componente no se pueden separar.
  */
 export function Recortador({
   duracion,
   trimIn,
   trimOut,
   currentTime,
-  fps,
-  speed,
+  paso,
+  nombrePaso,
+  centro,
+  accion,
   deshabilitado,
   onTrim,
   onSeek,
@@ -53,22 +63,22 @@ export function Recortador({
 
   const moverEntrada = useCallback(
     (segundos: number) => {
-      const valor = limitarEntrada(segundos, trimOut, fps);
+      const valor = limitarEntrada(segundos, trimOut, paso);
       onTrim({ trimIn: valor });
       // El visor salta al cuadro que se esta marcando: es lo que reemplaza a las
       // miniaturas, sin tener que decodificar nada de mas.
       onSeek(valor);
     },
-    [trimOut, fps, onTrim, onSeek],
+    [trimOut, paso, onTrim, onSeek],
   );
 
   const moverSalida = useCallback(
     (segundos: number) => {
-      const valor = limitarSalida(segundos, trimIn, fps, duracion);
+      const valor = limitarSalida(segundos, trimIn, paso, duracion);
       onTrim({ trimOut: valor });
       onSeek(valor);
     },
-    [trimIn, fps, duracion, onTrim, onSeek],
+    [trimIn, paso, duracion, onTrim, onSeek],
   );
 
   const aplicar = useCallback(
@@ -119,8 +129,8 @@ export function Recortador({
     agarre.current = null;
   }, []);
 
-  /** Las flechas del teclado mueven de a un cuadro, igual que los botones. */
-  const teclas = (e: React.KeyboardEvent, mover: (cuadros: number) => void) => {
+  /** Las flechas del teclado mueven de a un paso, igual que los botones. */
+  const teclas = (e: React.KeyboardEvent, mover: (pasos: number) => void) => {
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
       mover(-1);
@@ -130,35 +140,32 @@ export function Recortador({
     }
   };
 
-  const cuadrosEntrada = (cuadros: number) => moverEntrada(trimIn + cuadros * unCuadro(fps));
-  const cuadrosSalida = (cuadros: number) => moverSalida(trimOut + cuadros * unCuadro(fps));
-
-  const material = Math.max(0, trimOut - trimIn);
-  const enElVideo = speed > 0 ? material / speed : material;
+  const pasosEntrada = (pasos: number) => moverEntrada(trimIn + pasos * paso);
+  const pasosSalida = (pasos: number) => moverSalida(trimOut + pasos * paso);
 
   return (
     <div className="recortador">
       <div className="recortador-tiempos">
         <Marca
-          etiqueta="Entrada"
+          etiqueta="entrada"
           valor={formatSeconds(trimIn)}
+          nombrePaso={nombrePaso}
           deshabilitado={deshabilitado}
-          onCuadro={cuadrosEntrada}
+          onPaso={pasosEntrada}
         />
 
         <div className="recortador-marca centrada">
-          <span className="etiqueta">Queda</span>
-          <span className="recortador-valor">{enElVideo.toFixed(1)} s</span>
-          {Math.abs(speed - 1) > 1e-6 && (
-            <span className="recortador-nota">{material.toFixed(1)} s de material</span>
-          )}
+          <span className="etiqueta">{centro.etiqueta}</span>
+          <span className="recortador-valor">{centro.valor}</span>
+          {centro.nota && <span className="recortador-nota">{centro.nota}</span>}
         </div>
 
         <Marca
-          etiqueta="Salida"
+          etiqueta="salida"
           valor={formatSeconds(trimOut)}
+          nombrePaso={nombrePaso}
           deshabilitado={deshabilitado}
-          onCuadro={cuadrosSalida}
+          onPaso={pasosSalida}
         />
       </div>
 
@@ -186,7 +193,7 @@ export function Recortador({
           aria-valuemax={duracion}
           aria-valuenow={trimIn}
           aria-valuetext={formatSeconds(trimIn)}
-          onKeyDown={(e) => teclas(e, cuadrosEntrada)}
+          onKeyDown={(e) => teclas(e, pasosEntrada)}
           style={{ left: `${fraccion(trimIn) * 100}%` }}
         />
         <div
@@ -198,25 +205,26 @@ export function Recortador({
           aria-valuemax={duracion}
           aria-valuenow={trimOut}
           aria-valuetext={formatSeconds(trimOut)}
-          onKeyDown={(e) => teclas(e, cuadrosSalida)}
+          onKeyDown={(e) => teclas(e, pasosSalida)}
           style={{ left: `${fraccion(trimOut) * 100}%` }}
         />
       </div>
 
       <div className="recortador-pie">
+        {accion}
         <button
           className="chico"
           disabled={deshabilitado}
-          onClick={() => onTrim({ trimIn: limitarEntrada(currentTime, trimOut, fps) })}
+          onClick={() => onTrim({ trimIn: limitarEntrada(currentTime, trimOut, paso) })}
         >
-          Entrada acá
+          entrada acá
         </button>
         <button
           className="chico"
           disabled={deshabilitado}
-          onClick={() => onTrim({ trimOut: limitarSalida(currentTime, trimIn, fps, duracion) })}
+          onClick={() => onTrim({ trimOut: limitarSalida(currentTime, trimIn, paso, duracion) })}
         >
-          Salida acá
+          salida acá
         </button>
         <span className="recortador-posicion">
           {formatSeconds(currentTime)} / {formatSeconds(duracion)}
@@ -229,13 +237,15 @@ export function Recortador({
 function Marca({
   etiqueta,
   valor,
+  nombrePaso,
   deshabilitado,
-  onCuadro,
+  onPaso,
 }: {
   etiqueta: string;
   valor: string;
+  nombrePaso: string;
   deshabilitado: boolean;
-  onCuadro: (cuadros: number) => void;
+  onPaso: (pasos: number) => void;
 }) {
   return (
     <div className="recortador-marca">
@@ -244,15 +254,15 @@ function Marca({
       <div className="recortador-cuadros">
         <button
           disabled={deshabilitado}
-          onClick={() => onCuadro(-1)}
-          title={`Un cuadro atrás en ${etiqueta.toLowerCase()}`}
+          onClick={() => onPaso(-1)}
+          title={`${nombrePaso} atrás en ${etiqueta.toLowerCase()}`}
         >
           ◀
         </button>
         <button
           disabled={deshabilitado}
-          onClick={() => onCuadro(1)}
-          title={`Un cuadro adelante en ${etiqueta.toLowerCase()}`}
+          onClick={() => onPaso(1)}
+          title={`${nombrePaso} adelante en ${etiqueta.toLowerCase()}`}
         >
           ▶
         </button>
