@@ -28,6 +28,28 @@ export interface TimelineClip {
   speed: number;
   trimIn: number;
   trimOut: number;
+  /** Volumen del sonido propio del clip, de 0 a 1. */
+  volume: number;
+}
+
+/**
+ * La musica del proyecto: una sola pista que corre sobre toda la linea de
+ * tiempo. Da lo mismo si salio de un .mp3 importado o del audio de un video,
+ * porque en los dos casos termina siendo el mismo AudioBuffer decodificado.
+ */
+export interface MusicTrack {
+  id: string;
+  /** Para mostrar: el nombre del archivo, o el del clip del que se extrajo. */
+  name: string;
+  origen: 'archivo' | 'clip';
+  /** Ya decodificada: se usa igual para escucharla y para mezclar el export. */
+  buffer: AudioBuffer;
+  duracionSeconds: number;
+  /** Desde que segundo del tema arranca la musica en la linea de tiempo. */
+  startInMusic: number;
+  volume: number;
+  fadeIn: number;
+  fadeOut: number;
 }
 
 /** Duracion que ocupa el clip en la salida, ya con su velocidad aplicada. */

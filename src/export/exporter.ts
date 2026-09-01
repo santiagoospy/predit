@@ -1,5 +1,6 @@
 import {
   ALL_FORMATS,
+  AudioBufferSource,
   BlobSource,
   BufferTarget,
   CanvasSource,
@@ -8,10 +9,22 @@ import {
   Output,
   QUALITY_HIGH,
   VideoSampleSink,
+  getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec,
+  type AudioCodec,
   type VideoCodec,
 } from 'mediabunny';
 
+import { decodeAudioRange } from '../audio/decode';
+import {
+  clipAportaAudio,
+  planMix,
+  renderMix,
+  sliceAudioBuffer,
+  MIX_SAMPLE_RATE,
+  type MixClip,
+  type MixMusic,
+} from '../audio/mix';
 import type { Lut3D } from '../color/cube';
 import { LutRenderer, type FitMode, type Framing } from '../color/renderer';
 import type { ExportPreset } from './presets';
@@ -28,6 +41,10 @@ export interface ExportClip {
   fit: FitMode;
   panX?: number;
   panY?: number;
+  /** Volumen del sonido propio del clip, de 0 a 1. */
+  volume: number;
+  hasAudio: boolean;
+  audioCanDecode: boolean;
 }
 
 export interface ExportProgress {
@@ -36,13 +53,23 @@ export interface ExportProgress {
   clipIndex: number;
   clipCount: number;
   framesWritten: number;
+  /** El audio se prepara entero antes de arrancar con la imagen. */
+  fase: 'audio' | 'video';
 }
 
 export interface ExportOptions {
   preset: ExportPreset;
   frameRate: number;
+  /** La musica que va sobre toda la linea de tiempo, ya decodificada. */
+  music: MixMusic | null;
   onProgress?: (progress: ExportProgress) => void;
   signal?: AbortSignal;
+}
+
+export interface ExportResult {
+  blob: Blob;
+  /** Lo que salio distinto de lo pedido pero no ameritaba frenar el export. */
+  avisos: string[];
 }
 
 export class ExportError extends Error {
@@ -65,7 +92,10 @@ export function outputDuration(clip: ExportClip): number {
  * confiar en la busqueda por tiempo de un <video>, que en material long-GOP
  * cae en el fotograma clave mas cercano.
  */
-export async function exportClips(clips: ExportClip[], options: ExportOptions): Promise<Blob> {
+export async function exportClips(
+  clips: ExportClip[],
+  options: ExportOptions,
+): Promise<ExportResult> {
   if (clips.length === 0) throw new ExportError('No hay clips para exportar.');
 
   const { preset, frameRate } = options;
@@ -75,6 +105,12 @@ export async function exportClips(clips: ExportClip[], options: ExportOptions): 
   }
 
   const codec = await pickCodec(preset);
+
+  // El audio se resuelve entero antes de tocar la imagen: la mezcla se hace en
+  // un OfflineAudioContext, que rinde muy por encima del tiempo real, y de ahi
+  // sale la pista completa lista para ir alimentando al codificador.
+  const avisos: string[] = [];
+  const mezcla = await prepararAudio(clips, options, avisos);
 
   // Un canvas propio para el export: el del visor tiene otra resolucion.
   const canvas = document.createElement('canvas');
@@ -92,6 +128,12 @@ export async function exportClips(clips: ExportClip[], options: ExportOptions): 
 
   const source = new CanvasSource(canvas, { codec, bitrate: QUALITY_HIGH });
   output.addVideoTrack(source, { frameRate });
+
+  const audioSource = mezcla
+    ? new AudioBufferSource({ codec: mezcla.codec, quality: QUALITY_HIGH })
+    : null;
+  if (audioSource) output.addAudioTrack(audioSource);
+  const volcarAudio = crearVolcadoDeAudio(audioSource, mezcla?.buffer ?? null);
 
   try {
     await output.start();
@@ -121,17 +163,23 @@ export async function exportClips(clips: ExportClip[], options: ExportOptions): 
             clipIndex,
             clipCount: clips.length,
             framesWritten: written,
+            fase: 'video',
           }),
       });
 
       timelineSeconds = clipEndSeconds;
+
+      // Se vuelca el audio de a tramos, a medida que la imagen avanza, para que
+      // el muxer no tenga que sostener la pista entera hasta el final.
+      await volcarAudio(timelineSeconds);
     }
 
+    await volcarAudio(Infinity);
     await output.finalize();
 
     const buffer = target.buffer;
     if (!buffer) throw new ExportError('El codificador no devolvio ningun dato.');
-    return new Blob([buffer], { type: 'video/mp4' });
+    return { blob: new Blob([buffer], { type: 'video/mp4' }), avisos };
   } catch (error) {
     await output.cancel().catch(() => {});
     throw error;
@@ -234,6 +282,94 @@ async function pickCodec(preset: ExportPreset): Promise<VideoCodec> {
     );
   }
   return codec;
+}
+
+/**
+ * Decodifica el sonido de los clips que aportan, lo mezcla con la musica y
+ * devuelve la pista completa.
+ *
+ * Nada de esto es motivo para frenar un export: si el dispositivo no sabe
+ * codificar audio, o si un clip suelto no se deja decodificar, el video sale
+ * igual y el problema se cuenta como aviso.
+ */
+async function prepararAudio(
+  clips: ExportClip[],
+  options: ExportOptions,
+  avisos: string[],
+): Promise<{ buffer: AudioBuffer; codec: AudioCodec } | null> {
+  const aporta = clips.map(clipAportaAudio);
+  if (!options.music && !aporta.some(Boolean)) return null;
+
+  const codec = await getFirstEncodableAudioCodec(['aac', 'opus'], {
+    numberOfChannels: 2,
+    sampleRate: MIX_SAMPLE_RATE,
+  });
+  if (!codec) {
+    avisos.push('Este dispositivo no puede codificar audio, asi que el MP4 sale mudo.');
+    return null;
+  }
+
+  options.onProgress?.({
+    fraction: 0,
+    clipIndex: 0,
+    clipCount: clips.length,
+    framesWritten: 0,
+    fase: 'audio',
+  });
+
+  const paraMezclar: MixClip[] = [];
+  for (const [i, clip] of clips.entries()) {
+    throwIfAborted(options.signal);
+
+    let buffer: AudioBuffer | null = null;
+    if (aporta[i]) {
+      try {
+        buffer = await decodeAudioRange(clip.file, clip.inSeconds, clip.outSeconds);
+      } catch (error) {
+        avisos.push(
+          `No pude usar el audio de "${clip.file.name}": ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    paraMezclar.push({
+      outputDuration: outputDuration(clip),
+      buffer,
+      volume: clip.volume,
+    });
+  }
+
+  const { events, totalSeconds } = planMix(paraMezclar, options.music);
+  if (events.length === 0) return null;
+
+  return { buffer: await renderMix(events, totalSeconds), codec };
+}
+
+/**
+ * Va entregando la mezcla al codificador de a un segundo por vez. Cada llamada
+ * escribe todo lo que ya quedo cubierto por la imagen; con Infinity vacia lo que
+ * falte.
+ */
+function crearVolcadoDeAudio(
+  source: AudioBufferSource | null,
+  mezcla: AudioBuffer | null,
+): (hastaSegundos: number) => Promise<void> {
+  let escritos = 0;
+
+  return async (hastaSegundos: number) => {
+    if (!source || !mezcla) return;
+
+    const objetivo = Math.min(
+      mezcla.length,
+      Math.round(Math.min(hastaSegundos, mezcla.duration) * mezcla.sampleRate),
+    );
+    while (escritos < objetivo) {
+      const cuantos = Math.min(mezcla.sampleRate, objetivo - escritos);
+      await source.add(sliceAudioBuffer(mezcla, escritos, cuantos));
+      escritos += cuantos;
+    }
+  };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

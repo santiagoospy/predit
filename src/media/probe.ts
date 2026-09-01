@@ -17,6 +17,11 @@ export interface ClipInfo {
   /** El aviso importante: si es HDR, Safari le aplica su propio mapeo de tonos. */
   isHdr: boolean;
   canDecode: boolean;
+  hasAudio: boolean;
+  audioCodec: string | null;
+  audioSampleRate: number | null;
+  audioChannels: number | null;
+  audioCanDecode: boolean;
 }
 
 export class UnsupportedClipError extends Error {
@@ -56,6 +61,16 @@ export async function probeClip(file: File): Promise<ClipInfo> {
       input.computeDuration(),
     ]);
 
+  const audioTrack = await input.getPrimaryAudioTrack();
+  const audio = audioTrack
+    ? await Promise.all([
+        audioTrack.getCodec(),
+        audioTrack.getSampleRate(),
+        audioTrack.getNumberOfChannels(),
+        audioTrack.canDecode(),
+      ])
+    : null;
+
   return {
     name: file.name,
     sizeBytes: file.size,
@@ -70,6 +85,11 @@ export async function probeClip(file: File): Promise<ClipInfo> {
     colorSpace,
     isHdr,
     canDecode,
+    hasAudio: audio !== null,
+    audioCodec: audio?.[0] ?? null,
+    audioSampleRate: audio?.[1] ?? null,
+    audioChannels: audio?.[2] ?? null,
+    audioCanDecode: audio?.[3] ?? false,
   };
 }
 
@@ -98,6 +118,13 @@ export function clipWarnings(info: ClipInfo): string[] {
   const transfer = info.colorSpace.transfer;
   if (transfer && transfer !== 'bt709' && transfer !== 'iec61966-2-1') {
     warnings.push(`Curva de transferencia inusual: "${transfer}". Verifica el color contra la camara.`);
+  }
+
+  if (info.hasAudio && !info.audioCanDecode) {
+    warnings.push(
+      `Este dispositivo no puede decodificar el audio del clip (${info.audioCodec ?? 'codec desconocido'}). ` +
+        'El clip va a salir mudo, pero la imagen se exporta igual.',
+    );
   }
 
   if (!info.frameRateIsConstant) {

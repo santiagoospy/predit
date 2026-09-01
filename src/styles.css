@@ -435,3 +435,11 @@ label.chico input {
 label.chico.ocupado {
   opacity: 0.5;
 }
+
+.deslizador.apagado {
+  opacity: 0.4;
+}
+
+.deslizador.apagado input[type='range'] {
+  cursor: not-allowed;
+}

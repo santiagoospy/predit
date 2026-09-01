@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { decodeAudioRange } from './audio/decode';
+import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
-import { clipOutputDuration, nextId, type LibraryLut, type TimelineClip } from './edit/types';
+import {
+  clipOutputDuration,
+  nextId,
+  type LibraryLut,
+  type MusicTrack,
+  type TimelineClip,
+} from './edit/types';
 import {
   clipWarnings,
   formatBytes,
@@ -35,10 +43,15 @@ export function App() {
   const framingRef = useRef<Framing | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const clipsRef = useRef<TimelineClip[]>([]);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const musicNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const musicGainRef = useRef<GainNode | null>(null);
 
   const [clips, setClips] = useState<TimelineClip[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lutLibrary, setLutLibrary] = useState<LibraryLut[]>([]);
+  const [music, setMusic] = useState<MusicTrack | null>(null);
+  const [musicBusy, setMusicBusy] = useState(false);
   const [preset, setPreset] = useState<ExportPreset>(DEFAULT_PRESET);
   const [currentTime, setCurrentTime] = useState(0);
   const [bypass, setBypass] = useState(false);
@@ -47,6 +60,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [listo, setListo] = useState<string | null>(null);
+  const [avisos, setAvisos] = useState<string[]>([]);
 
   bypassRef.current = bypass;
   clipsRef.current = clips;
@@ -63,6 +77,27 @@ export function App() {
   const fit = selected?.fit ?? 'cover';
   const panX = selected?.panX ?? 0;
   const panY = selected?.panY ?? 0;
+  const volume = selected?.volume ?? 1;
+
+  /** Si el clip seleccionado va a sonar con su propio audio, o queda mudo. */
+  const usaSuAudio = selected
+    ? clipAportaAudio({
+        hasAudio: selected.info.hasAudio,
+        audioCanDecode: selected.info.audioCanDecode,
+        volume: selected.volume,
+        speed: selected.speed,
+      })
+    : false;
+
+  /** En que segundo de la linea de tiempo arranca el clip seleccionado. */
+  const offsetSeleccionado = useMemo(() => {
+    let acc = 0;
+    for (const c of clips) {
+      if (c.id === selectedId) break;
+      acc += clipOutputDuration(c);
+    }
+    return acc;
+  }, [clips, selectedId]);
 
   const velocidadConforme = useMemo(
     () => conformSpeed(sourceFps, DEFAULT_FRAME_RATE),
@@ -93,6 +128,60 @@ export function App() {
     },
     [selectedId],
   );
+
+  /**
+   * El contexto de audio se crea recien cuando el usuario toca algo: iOS no deja
+   * que arranque solo, y uno creado antes del primer gesto queda suspendido.
+   */
+  const getAudioCtx = useCallback(() => {
+    audioCtxRef.current ??= new AudioContext();
+    void audioCtxRef.current.resume();
+    return audioCtxRef.current;
+  }, []);
+
+  const detenerMusica = useCallback(() => {
+    const nodo = musicNodeRef.current;
+    if (!nodo) return;
+    try {
+      nodo.stop();
+    } catch {
+      // Ya se habia terminado sola; nada que frenar.
+    }
+    nodo.disconnect();
+    musicNodeRef.current = null;
+    musicGainRef.current = null;
+  }, []);
+
+  /**
+   * Arranca la musica desde el segundo que le toca en la linea de tiempo, no
+   * desde el principio del tema: reproduciendo el tercer clip se escucha lo que
+   * va a sonar ahi en el MP4 final.
+   */
+  const arrancarMusica = useCallback(
+    (posicionEnLaLinea: number) => {
+      detenerMusica();
+      if (!music || music.volume <= 0) return;
+
+      const desde = music.startInMusic + posicionEnLaLinea;
+      if (desde < 0 || desde >= music.buffer.duration) return;
+
+      const ctx = getAudioCtx();
+      const fuente = ctx.createBufferSource();
+      fuente.buffer = music.buffer;
+      const ganancia = ctx.createGain();
+      ganancia.gain.value = music.volume;
+      fuente.connect(ganancia).connect(ctx.destination);
+      fuente.start(0, desde);
+
+      musicNodeRef.current = fuente;
+      musicGainRef.current = ganancia;
+    },
+    [music, detenerMusica, getAudioCtx],
+  );
+
+  const updateMusic = useCallback((patch: Partial<MusicTrack>) => {
+    setMusic((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
   // El lienzo tiene la forma del preset, para que lo que se ve sea lo que sale.
   const previewSize = useMemo(() => {
@@ -131,6 +220,7 @@ export function App() {
     const video = videoRef.current;
     if (!video || !selected) return undefined;
     setPlaying(false);
+    detenerMusica();
     const target = selected.trimIn;
     const apply = () => {
       video.currentTime = target;
@@ -143,6 +233,39 @@ export function App() {
     video.addEventListener('loadedmetadata', apply, { once: true });
     return () => video.removeEventListener('loadedmetadata', apply);
   }, [selectedId]);
+
+  // El sonido del clip y su velocidad de reproduccion. Sin el playbackRate, la
+  // camara lenta no se veia hasta exportar y la musica se desincronizaba.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !usaSuAudio;
+    video.volume = Math.min(1, Math.max(0, volume));
+    try {
+      // Los navegadores solo aceptan un rango acotado de velocidades.
+      const rate = Math.min(4, Math.max(0.25, speed));
+      // defaultPlaybackRate ademas: al cambiar de archivo, el navegador vuelve a
+      // esa, y sin fijarla el clip nuevo arrancaba siempre a 1x.
+      video.defaultPlaybackRate = rate;
+      video.playbackRate = rate;
+    } catch {
+      // Si la rechaza, el visor sigue a velocidad normal.
+    }
+  }, [usaSuAudio, volume, speed, selectedId]);
+
+  // El volumen de la musica se puede mover mientras suena.
+  useEffect(() => {
+    if (musicGainRef.current && music) musicGainRef.current.gain.value = music.volume;
+  }, [music]);
+
+  // Al desmontar, corta cualquier sonido que haya quedado vivo.
+  useEffect(
+    () => () => {
+      void audioCtxRef.current?.close();
+      audioCtxRef.current = null;
+    },
+    [],
+  );
 
   // El encuadre vive en un ref para que el bucle de dibujo no se reinicie con
   // cada movimiento del deslizador de recorte.
@@ -267,18 +390,25 @@ export function App() {
         video.pause();
         video.currentTime = trimIn;
         setPlaying(false);
+        detenerMusica();
       }
     };
     const id = setInterval(check, 60);
     return () => clearInterval(id);
-  }, [playing, trimIn, trimOut]);
+  }, [playing, trimIn, trimOut, detenerMusica]);
 
-  const seek = useCallback((seconds: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.currentTime = seconds;
-    setCurrentTime(seconds);
-  }, []);
+  const seek = useCallback(
+    (seconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      video.currentTime = seconds;
+      setCurrentTime(seconds);
+      // Si estaba sonando, la musica salta con la imagen en vez de quedar corrida.
+      if (video.paused) detenerMusica();
+      else arrancarMusica(offsetSeleccionado + (seconds - trimIn) / speed);
+    },
+    [arrancarMusica, detenerMusica, offsetSeleccionado, trimIn, speed],
+  );
 
   const onPickClips = useCallback(async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -306,6 +436,7 @@ export function App() {
           speed: 1,
           trimIn: 0,
           trimOut: info.durationSeconds,
+          volume: 1,
         });
       } catch (e) {
         fallos.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
@@ -364,6 +495,45 @@ export function App() {
     [lutLibrary, selectedId, updateSelected],
   );
 
+  /**
+   * Carga la musica del proyecto. Es el mismo camino para un .mp3 importado y
+   * para el audio sacado de un video: `decodeAudioRange` no distingue formato,
+   * asi que "extraer el audio de un clip" es pasarle el archivo del clip.
+   */
+  const cargarMusica = useCallback(
+    async (file: File | undefined, origen: 'archivo' | 'clip', nombre: string) => {
+      if (!file) return;
+      setError(null);
+      setListo(null);
+      setMusicBusy(true);
+      detenerMusica();
+      try {
+        const buffer = await decodeAudioRange(file);
+        setMusic({
+          id: nextId('mus'),
+          name: nombre,
+          origen,
+          buffer,
+          duracionSeconds: buffer.duration,
+          startInMusic: 0,
+          volume: 0.8,
+          fadeIn: 0,
+          fadeOut: 1.5,
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setMusicBusy(false);
+      }
+    },
+    [detenerMusica],
+  );
+
+  const quitarMusica = useCallback(() => {
+    detenerMusica();
+    setMusic(null);
+  }, [detenerMusica]);
+
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -371,22 +541,32 @@ export function App() {
       if (video.currentTime < trimIn || video.currentTime >= trimOut) video.currentTime = trimIn;
       void video.play();
       setPlaying(true);
+      arrancarMusica(offsetSeleccionado + (video.currentTime - trimIn) / speed);
     } else {
       video.pause();
       setPlaying(false);
+      detenerMusica();
     }
-  }, [trimIn, trimOut]);
+  }, [trimIn, trimOut, speed, offsetSeleccionado, arrancarMusica, detenerMusica]);
 
   const onExport = useCallback(async () => {
     if (clips.length === 0) return;
     videoRef.current?.pause();
     setPlaying(false);
+    detenerMusica();
     setError(null);
     setListo(null);
+    setAvisos([]);
 
     const controller = new AbortController();
     abortRef.current = controller;
-    setProgress({ fraction: 0, clipIndex: 0, clipCount: clips.length, framesWritten: 0 });
+    setProgress({
+      fraction: 0,
+      clipIndex: 0,
+      clipCount: clips.length,
+      framesWritten: 0,
+      fase: 'audio',
+    });
 
     try {
       const lista: ExportClip[] = clips.map((c) => ({
@@ -399,17 +579,22 @@ export function App() {
         fit: c.fit,
         panX: c.panX,
         panY: c.panY,
+        volume: c.volume,
+        hasAudio: c.info.hasAudio,
+        audioCanDecode: c.info.audioCanDecode,
       }));
 
-      const blob = await exportClips(lista, {
+      const { blob, avisos: avisosDelExport } = await exportClips(lista, {
         preset,
         frameRate: DEFAULT_FRAME_RATE,
+        music,
         onProgress: setProgress,
         signal: controller.signal,
       });
 
       const nombre = `predit-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.mp4`;
       const via = await deliverExport(blob, nombre);
+      setAvisos(avisosDelExport);
       setListo(
         `${nombre} · ${formatBytes(blob.size)} · ${via === 'compartido' ? 'listo para compartir' : 'descargado'}`,
       );
@@ -419,7 +604,7 @@ export function App() {
       setProgress(null);
       abortRef.current = null;
     }
-  }, [clips, lutLibrary, preset]);
+  }, [clips, lutLibrary, preset, music, detenerMusica]);
 
   const exportando = progress !== null;
 
@@ -455,8 +640,10 @@ export function App() {
           src={selected?.url}
           className="video-oculto"
           playsInline
-          muted
-          onEnded={() => setPlaying(false)}
+          onEnded={() => {
+            setPlaying(false);
+            detenerMusica();
+          }}
         />
       </main>
 
@@ -562,6 +749,33 @@ export function App() {
             </div>
           </div>
 
+          <Deslizador
+            etiqueta="Sonido del clip"
+            valor={volume}
+            max={1}
+            paso={0.01}
+            onChange={(v) => updateSelected({ volume: v })}
+            deshabilitado={!selected.info.hasAudio || !selected.info.audioCanDecode}
+            texto={
+              !selected.info.hasAudio
+                ? 'sin audio'
+                : !selected.info.audioCanDecode
+                  ? 'no decodifica'
+                  : Math.abs(speed - 1) > 1e-6
+                    ? 'mudo (velocidad)'
+                    : volume === 0
+                      ? 'mudo'
+                      : `${Math.round(volume * 100)}%`
+            }
+          />
+
+          {selected.info.hasAudio && selected.info.audioCanDecode && Math.abs(speed - 1) > 1e-6 && (
+            <p className="aviso">
+              El sonido de este clip se silencia porque tiene la velocidad cambiada: estirarlo
+              junto con la imagen lo desafina. Ponelo en 1× si querés que se escuche.
+            </p>
+          )}
+
           {speed < velocidadConforme - 1e-6 && (
             <p className="aviso">
               A {speed}× no alcanzan los cuadros del archivo ({sourceFps} fps) y algunos se
@@ -656,6 +870,88 @@ export function App() {
       {clips.length > 0 && (
         <section className="panel">
           <div className="fila">
+            <span className="etiqueta">
+              Música
+              {music
+                ? ` · ${music.origen === 'clip' ? 'del clip ' : ''}${music.name} ` +
+                  `(${formatDuration(music.duracionSeconds)})`
+                : ''}
+            </span>
+            <div className="botones">
+              <label className={`chico${musicBusy || exportando ? ' ocupado' : ''}`}>
+                {musicBusy ? 'Leyendo…' : music ? 'Cambiar audio' : '+ Audio'}
+                <input
+                  type="file"
+                  accept="audio/*,video/*"
+                  disabled={musicBusy || exportando}
+                  onChange={(e) => {
+                    const archivo = e.target.files?.[0];
+                    void cargarMusica(archivo, 'archivo', archivo?.name ?? 'audio');
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              {selected && (
+                <button
+                  className="chico"
+                  disabled={!selected.info.hasAudio || musicBusy || exportando}
+                  onClick={() => void cargarMusica(selected.file, 'clip', selected.info.name)}
+                  title={
+                    selected.info.hasAudio
+                      ? 'Saca el audio de este video y lo usa como música sobre todo el proyecto'
+                      : 'Este clip no tiene pista de audio'
+                  }
+                >
+                  Usar el audio de este clip
+                </button>
+              )}
+              {music && (
+                <button className="chico" onClick={quitarMusica} disabled={exportando}>
+                  Quitar
+                </button>
+              )}
+            </div>
+          </div>
+
+          {music && (
+            <>
+              <Deslizador
+                etiqueta="Volumen de la música"
+                valor={music.volume}
+                max={1}
+                paso={0.01}
+                onChange={(v) => updateMusic({ volume: v })}
+                texto={music.volume === 0 ? 'muda' : `${Math.round(music.volume * 100)}%`}
+              />
+              <Deslizador
+                etiqueta="Empieza en"
+                valor={music.startInMusic}
+                max={Math.max(0, music.duracionSeconds - 1)}
+                onChange={(v) => updateMusic({ startInMusic: v })}
+                texto={formatDuration(music.startInMusic)}
+              />
+              <Deslizador
+                etiqueta="Fundido de salida"
+                valor={music.fadeOut}
+                max={5}
+                paso={0.1}
+                onChange={(v) => updateMusic({ fadeOut: v })}
+                texto={music.fadeOut === 0 ? 'sin fundido' : `${music.fadeOut.toFixed(1)} s`}
+              />
+              {music.duracionSeconds - music.startInMusic < duracionTotal && (
+                <p className="aviso">
+                  El tema alcanza para {formatDuration(music.duracionSeconds - music.startInMusic)}{' '}
+                  de los {formatDuration(duracionTotal)} del video: el resto queda sin música.
+                </p>
+              )}
+            </>
+          )}
+        </section>
+      )}
+
+      {clips.length > 0 && (
+        <section className="panel">
+          <div className="fila">
             <span className="etiqueta">Salida</span>
             <div className="botones">
               {EXPORT_PRESETS.map((p) => (
@@ -673,9 +969,11 @@ export function App() {
           </div>
 
           <button className="principal grande" onClick={() => void onExport()} disabled={exportando}>
-            {exportando
-              ? `Exportando clip ${(progress?.clipIndex ?? 0) + 1} de ${progress?.clipCount ?? clips.length} · ${Math.round((progress?.fraction ?? 0) * 100)}%`
-              : `Exportar MP4 · ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${duracionTotal.toFixed(1)} s`}
+            {!exportando
+              ? `Exportar MP4 · ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${duracionTotal.toFixed(1)} s`
+              : progress?.fase === 'audio'
+                ? 'Preparando el audio…'
+                : `Exportando clip ${(progress?.clipIndex ?? 0) + 1} de ${progress?.clipCount ?? clips.length} · ${Math.round((progress?.fraction ?? 0) * 100)}%`}
           </button>
 
           {exportando && (
@@ -685,6 +983,11 @@ export function App() {
           )}
 
           {listo && <p className="listo">{listo}</p>}
+          {avisos.map((a) => (
+            <p key={a} className="aviso">
+              {a}
+            </p>
+          ))}
           {error && <p className="error">{error}</p>}
         </section>
       )}
@@ -827,6 +1130,7 @@ function Deslizador({
   paso,
   onChange,
   texto,
+  deshabilitado,
 }: {
   etiqueta: string;
   valor: number;
@@ -835,9 +1139,10 @@ function Deslizador({
   paso?: number;
   onChange: (valor: number) => void;
   texto: string;
+  deshabilitado?: boolean;
 }) {
   return (
-    <label className="deslizador">
+    <label className={`deslizador${deshabilitado ? ' apagado' : ''}`}>
       <span className="etiqueta">{etiqueta}</span>
       <input
         type="range"
@@ -845,6 +1150,7 @@ function Deslizador({
         max={max}
         step={paso ?? 0.01}
         value={valor}
+        disabled={deshabilitado ?? false}
         onChange={(e) => onChange(Number(e.target.value))}
       />
       <span className="valor">{texto}</span>
@@ -879,6 +1185,13 @@ function Diagnostico({ info }: { info: ClipInfo }) {
     ],
     ['HDR', info.isHdr ? 'sí' : 'no'],
     ['Decodificable acá', info.canDecode ? 'sí' : 'no'],
+    [
+      'Audio',
+      info.hasAudio
+        ? `${info.audioCodec ?? '?'} · ${info.audioChannels ?? '?'} canales · ` +
+          `${info.audioSampleRate ?? '?'} Hz${info.audioCanDecode ? '' : ' · no decodificable acá'}`
+        : 'sin pista de audio',
+    ],
   ];
 
   return (
