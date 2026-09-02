@@ -1,6 +1,7 @@
 import type { Lut3D } from '../color/cube';
 import type { FitMode, Framing } from '../color/renderer';
 import type { ClipInfo } from '../media/probe';
+import type { HuellaArchivo } from '../proyecto/esquema';
 
 /**
  * Un LUT cargado una vez y reutilizable entre clips. Con tres camaras (FX6,
@@ -42,6 +43,13 @@ export interface MusicTrack {
   /** Para mostrar: el nombre del archivo, o el del clip del que se extrajo. */
   name: string;
   origen: 'archivo' | 'clip';
+  /** Con que se reconoce el archivo al reabrir el proyecto. */
+  huella: HuellaArchivo;
+  /**
+   * Si el tema salio de un clip, de cual. Al reabrir, re-vincular ese video
+   * alcanza para rearmar la musica sola, sin pedir el mismo archivo dos veces.
+   */
+  clipId: string | null;
   /** Ya decodificada: se usa igual para escucharla y para mezclar el export. */
   buffer: AudioBuffer;
   duracionSeconds: number;
@@ -65,6 +73,8 @@ export interface MusicTrack {
 export interface OverlayLayer {
   id: string;
   name: string;
+  /** Con que se reconoce la imagen al reabrir el proyecto. */
+  huella: HuellaArchivo;
   /**
    * Ya decodificada. Una imagen estatica entra entera en memoria sin drama: un
    * cuadro 1920x1080 en RGBA son 8 MB. Una secuencia animada NO se podria
@@ -104,8 +114,17 @@ export interface OverlayLayer {
   scaleSalida: number;
 }
 
-/** Duracion que ocupa el clip en la salida, ya con su velocidad aplicada. */
-export function clipOutputDuration(clip: TimelineClip): number {
+/**
+ * Duracion que ocupa el clip en la salida, ya con su velocidad aplicada.
+ *
+ * Pide solo los tres numeros que usa, y no un `TimelineClip` entero, para que
+ * tambien sirva sobre un clip guardado, que no tiene archivo ni info.
+ */
+export function clipOutputDuration(clip: {
+  trimIn: number;
+  trimOut: number;
+  speed: number;
+}): number {
   return Math.max(0, (clip.trimOut - clip.trimIn) / clip.speed);
 }
 

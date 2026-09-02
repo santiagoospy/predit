@@ -710,3 +710,160 @@ label.chico.ocupado {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* --- Proyecto: guardado, lista y re-vinculacion --- */
+
+/* El nombre del proyecto y la hora del ultimo autoguardado. Va a la derecha del
+   todo, separado del preset, porque no se lee: se mira de reojo para confirmar
+   que lo que uno hizo quedo guardado. */
+.guardado {
+  margin-left: auto;
+  color: var(--tenue);
+  font-size: 11px;
+  text-align: right;
+  word-break: break-word;
+}
+
+/* La pantalla que pide los archivos de un proyecto guardado. Tapa el editor en
+   vez de reemplazarlo: asi el <canvas> nunca se desmonta y el contexto WebGL
+   sigue vivo del otro lado. */
+.revincular {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  overflow-y: auto;
+  gap: 4px;
+}
+
+/* El cartel de la sesion cortada: la unica superficie con acento del sistema
+   fuera de los botones, porque es lo primero que hay que leer al abrir. */
+.cartel {
+  gap: 6px;
+  padding-top: 16px;
+}
+
+.cartel p:not(.comentario) {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radio);
+  border-left: 2px solid var(--acento);
+  background: var(--superficie);
+  font-size: 12px;
+}
+
+.faltantes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.faltantes li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: var(--radio);
+  background: var(--superficie);
+  font-size: 12px;
+}
+
+.faltantes .marca {
+  width: 10px;
+  color: var(--tenue);
+}
+
+.faltantes li.hay .marca {
+  color: var(--ok);
+}
+
+.faltantes li.hay .nombre {
+  color: var(--texto);
+}
+
+.faltantes .nombre {
+  flex: 1;
+  color: var(--texto-2);
+  word-break: break-all;
+}
+
+.faltantes .detalle {
+  color: var(--tenue);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.panel small {
+  color: #5c5c66;
+  font-size: 11px;
+}
+
+/* El unico campo de texto de la app: el nombre del proyecto. */
+.nombrar {
+  flex-direction: row;
+  gap: 6px;
+}
+
+.nombrar input {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: var(--radio);
+  border: 1px solid var(--borde);
+  background: var(--fondo);
+  color: var(--texto);
+  font: 500 12px/1.2 var(--mono);
+}
+
+.nombrar input:focus {
+  outline: none;
+  border-color: var(--acento);
+}
+
+.proyecto-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.proyecto-lista li {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.proyecto-abrir {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  background: var(--superficie);
+  border-color: var(--borde-tenue);
+}
+
+.proyecto-abrir .nombre {
+  color: var(--texto);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.proyecto-abrir .detalle {
+  color: var(--tenue);
+  font-size: 11px;
+}
+
+/* Nota en voz de comentario dentro de un panel. No es .pista: esa flota sobre
+   el visor en una sola linea, y esta es texto que envuelve. */
+.nota {
+  margin: 0;
+  color: var(--tenue);
+  font-size: 11px;
+}

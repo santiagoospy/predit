@@ -23,6 +23,9 @@ codificación de video pasan por WebGL2 y WebCodecs, así que anda offline una v
   de los videos que ya cargaste. Al reproducir un clip, la música suena desde el segundo que le toca
   en la línea de tiempo, así se escucha lo que va a quedar en el corte final.
 - Ordenás los clips y exportás **un solo MP4**, en horizontal, vertical 9:16 o UHD.
+- **Se guarda solo**: el montaje se autoguarda mientras editás y se le puede poner nombre para
+  tener varios proyectos. Si el teléfono cierra la app o se cae el navegador, al volver a abrirla
+  te ofrece retomar donde ibas.
 
 ## Una limitación importante
 
@@ -41,6 +44,23 @@ clip queda con imagen lenta y sin sonido directo.
 El navegador puede **leer** MP3 pero **no escribirlo** — no existe un encoder MP3 en WebCodecs — así
 que el MP4 exportado lleva AAC. Si el dispositivo no puede codificar audio, el video se exporta igual
 y la app avisa que salió mudo.
+
+## Qué se guarda y qué no
+
+Se guarda la **receta** del montaje —los recortes, las velocidades, el reencuadre, qué LUT usa cada
+clip, la música y la capa con sus tiempos—, que son unos pocos KB. **Los videos no se copian**: ya
+están en el teléfono y duplicarlos llenaría la cuota del navegador con varios GB.
+
+El precio es que al reabrir un proyecto hay que volver a elegir los archivos. No hay que
+emparejarlos a mano: se eligen todos juntos y la app los reconoce por nombre, tamaño y fecha, y cada
+uno vuelve a su lugar con su recorte intacto. Si algún archivo no aparece, el montaje entra igual
+sin ese clip.
+
+La **biblioteca de LUTs sí queda guardada entera**, porque un `.cube` pesa medio mega y tener que
+volver a subir el de cada cámara en cada sesión sería justo lo que la biblioteca vino a evitar.
+
+Todo vive en el IndexedDB del propio navegador: no hay cuenta ni servidor, y borrar los datos del
+sitio borra los proyectos.
 
 ## Uso
 

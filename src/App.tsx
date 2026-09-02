@@ -39,6 +39,12 @@ import {
   EXPORT_PRESETS,
   type ExportPreset,
 } from './export/presets';
+import { guardarLut } from './proyecto/almacen';
+import { horaCorta, huellaDe } from './proyecto/esquema';
+import { PanelProyecto } from './proyecto/PanelProyecto';
+import { ReVincular } from './proyecto/ReVincular';
+import type { EstadoRestaurado } from './proyecto/restaurar';
+import { useProyecto } from './proyecto/useProyecto';
 
 /** El preview no necesita mas de esto; ahorra bateria y memoria en el telefono. */
 const PREVIEW_MAX_SIDE = 1280;
@@ -799,6 +805,10 @@ export function App() {
             ? prev.map((l) => (l.id === id ? { ...l, lut } : l))
             : [...prev, { id, name: file.name, lut }],
         );
+        // La biblioteca es lo unico que sobrevive entero al cierre de la app:
+        // el .cube pesa poco y volver a subirlo por cada camara en cada sesion
+        // seria justo lo que la biblioteca vino a evitar.
+        void guardarLut({ id, name: file.name, lut });
         if (selectedId) {
           updateSelected(slot === 'conv' ? { lutConvId: id } : { lutLookId: id });
         }
@@ -815,7 +825,12 @@ export function App() {
    * asi que "extraer el audio de un clip" es pasarle el archivo del clip.
    */
   const cargarMusica = useCallback(
-    async (file: File | undefined, origen: 'archivo' | 'clip', nombre: string) => {
+    async (
+      file: File | undefined,
+      origen: 'archivo' | 'clip',
+      nombre: string,
+      clipId: string | null = null,
+    ) => {
       if (!file) return;
       setError(null);
       setListo(null);
@@ -827,6 +842,8 @@ export function App() {
           id: nextId('mus'),
           name: nombre,
           origen,
+          huella: huellaDe(file),
+          clipId,
           buffer,
           duracionSeconds: buffer.duration,
           startInMusic: 0,
@@ -864,6 +881,7 @@ export function App() {
         setCapa({
           id: nextId('capa'),
           name: file.name,
+          huella: huellaDe(file),
           bitmap: imagen.bitmap,
           width: imagen.width,
           height: imagen.height,
@@ -909,6 +927,67 @@ export function App() {
     setPlaying(false);
     detenerMusica();
   }, [detenerMusica]);
+
+  /**
+   * Suelta el material que tiene el editor en la mano.
+   *
+   * Hay que llamarlo antes de reemplazar el montaje: los blobs de los clips y
+   * el bitmap de la capa no los junta el recolector solo, y cambiar de proyecto
+   * varias veces sin esto va dejando cada montaje viejo ocupando memoria.
+   */
+  const soltarMaterial = useCallback(() => {
+    for (const c of clipsRef.current) URL.revokeObjectURL(c.url);
+    capaRef.current?.bitmap.close();
+  }, []);
+
+  /** Deja el editor como recien abierta la app. */
+  const limpiarEditor = useCallback(() => {
+    frenar();
+    soltarMaterial();
+    setClips([]);
+    setSelectedId(null);
+    setMusic(null);
+    setMusicTime(0);
+    setCapa(null);
+    setArrastra('clip');
+    setPreset(DEFAULT_PRESET);
+    setCurrentTime(0);
+    setError(null);
+    setListo(null);
+    setAvisos([]);
+  }, [frenar, soltarMaterial]);
+
+  /** Entra al editor con un montaje guardado, ya re-vinculado a sus archivos. */
+  const aplicarRestaurado = useCallback(
+    (restaurado: EstadoRestaurado) => {
+      frenar();
+      soltarMaterial();
+      setClips(restaurado.clips);
+      setSelectedId(restaurado.selectedId);
+      setMusic(restaurado.music);
+      setMusicTime(0);
+      setCapa(restaurado.capa);
+      setArrastra(restaurado.capa ? 'capa' : 'clip');
+      setPreset(restaurado.preset);
+      setCurrentTime(0);
+      setError(null);
+      setListo(null);
+      setAvisos(restaurado.avisos);
+    },
+    [frenar, soltarMaterial],
+  );
+
+  const proyecto = useProyecto({
+    clips,
+    music,
+    capa,
+    preset,
+    selectedId,
+    biblioteca: lutLibrary,
+    onRestaurar: aplicarRestaurado,
+    onLimpiar: limpiarEditor,
+    onBiblioteca: setLutLibrary,
+  });
 
   /** El play de siempre: solo el clip seleccionado, entre sus dos marcas. */
   const reproducirClip = useCallback(() => {
@@ -1020,9 +1099,35 @@ export function App() {
 
   return (
     <div className="app">
+      {/* Las dos pantallas de arranque van encima del editor y no en su lugar:
+          asi el <canvas> se monta una sola vez, con el LutRenderer colgado, y no
+          hay que reconstruir el contexto WebGL al volver de re-vincular. */}
+      {proyecto.fase === 'cargando' && (
+        <div className="app revincular">
+          <header className="barra">
+            <h1>Predit</h1>
+          </header>
+          <p className="nota">/* abriendo lo último que estabas editando… */</p>
+        </div>
+      )}
+      {proyecto.pendiente && (
+        <ReVincular
+          pendiente={proyecto.pendiente}
+          biblioteca={lutLibrary}
+          restaurando={proyecto.restaurando}
+          error={proyecto.errorRestaurar}
+          onConfirmar={(asignados) => void proyecto.revincular(asignados)}
+          onDescartar={() => void proyecto.nuevo()}
+        />
+      )}
+
       <header className="barra">
         <h1>Predit</h1>
         <span className="subtitulo">{preset.slug}</span>
+        <span className="guardado">
+          {proyecto.nombre}
+          {proyecto.guardadoEn !== null && ` · ${horaCorta(proyecto.guardadoEn)}`}
+        </span>
       </header>
 
       <main className="visor">
@@ -1339,7 +1444,9 @@ export function App() {
               <button
                 className="chico"
                 disabled={!selected.info.hasAudio || musicBusy || exportando}
-                onClick={() => void cargarMusica(selected.file, 'clip', selected.info.name)}
+                onClick={() =>
+                  void cargarMusica(selected.file, 'clip', selected.info.name, selected.id)
+                }
                 title={
                   selected.info.hasAudio
                     ? 'Saca el audio de este video y lo usa como música sobre todo el proyecto'
@@ -1637,6 +1744,18 @@ export function App() {
         {error && <p className="error">{error}</p>}
       </section>
 
+      <PanelProyecto
+        nombre={proyecto.nombre}
+        guardadoEn={proyecto.guardadoEn}
+        lista={proyecto.lista}
+        deshabilitado={exportando}
+        hayMontaje={clips.length > 0 || music !== null || capa !== null}
+        onGuardarComo={(nuevo) => void proyecto.guardarComo(nuevo)}
+        onAbrir={(id) => void proyecto.abrir(id)}
+        onBorrar={(id) => void proyecto.borrar(id)}
+        onNuevo={() => void proyecto.nuevo()}
+        onRefrescar={proyecto.refrescar}
+      />
     </div>
   );
 }
