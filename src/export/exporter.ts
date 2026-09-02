@@ -424,32 +424,62 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new ExportError('Export cancelado.');
 }
 
+/** Como termino saliendo el MP4 del telefono. */
+export type ViaEntrega = 'compartido' | 'descargado';
+
 /**
- * Entrega el archivo. En iOS lo correcto es la hoja de compartir: desde ahi va a
- * Fotos, a Archivos o directo a Edits. La descarga clasica queda de respaldo
- * para el escritorio.
+ * Si este navegador puede abrir la hoja de compartir con un MP4.
+ *
+ * Se pregunta con un archivo vacio de sonda porque `canShare` mira el tipo y el
+ * nombre, no el contenido: preguntar con los 300 MB de verdad no cambiaria la
+ * respuesta y obligaria a tener el blob a mano antes de tiempo.
  */
-export async function deliverExport(blob: Blob, filename: string): Promise<'compartido' | 'descargado'> {
-  const file = new File([blob], filename, { type: 'video/mp4' });
-
-  if (navigator.canShare?.({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file] });
-      return 'compartido';
-    } catch (error) {
-      // Si el usuario cierra la hoja de compartir no es un error que valga la
-      // pena mostrar, pero tampoco hay que caer en la descarga sin avisar.
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        return 'compartido';
-      }
-    }
+export function puedeCompartirVideo(): boolean {
+  try {
+    const sonda = new File([], 'sonda.mp4', { type: 'video/mp4' });
+    return navigator.canShare?.({ files: [sonda] }) ?? false;
+  } catch {
+    return false;
   }
+}
 
+/** La descarga clasica. No necesita gesto del usuario: sirve de respaldo. */
+export function descargarExport(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * Abre la hoja de compartir del sistema: desde ahi el MP4 va a Fotos, a
+ * Archivos, a Drive o a Telegram.
+ *
+ * TIENE que llamarse adentro del handler del toque que la pide. `navigator.share`
+ * exige activacion de usuario y esa ventana dura unos segundos, asi que llamarla
+ * al terminar un export de varios minutos falla siempre: el toque que arranco el
+ * export ya vencio. Por eso la entrega quedo en dos pasos, exportar y despues
+ * compartir, y no encadenada al final del export.
+ */
+export async function compartirExport(blob: Blob, filename: string): Promise<ViaEntrega> {
+  const file = new File([blob], filename, { type: 'video/mp4' });
+
+  try {
+    await navigator.share({ files: [file] });
+    return 'compartido';
+  } catch (error) {
+    // Cerrar la hoja sin elegir destino es una decision, no una falla: ahi no
+    // hay que descargar nada por atras, el archivo sigue disponible para otro
+    // intento.
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return 'compartido';
+    }
+  }
+
+  // Cualquier otra falla (la hoja no abre, el archivo es muy grande para el
+  // destino) no puede dejar al usuario sin el video que acaba de esperar.
+  descargarExport(blob, filename);
   return 'descargado';
 }

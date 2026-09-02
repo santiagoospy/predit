@@ -23,6 +23,10 @@ codificación de video pasan por WebGL2 y WebCodecs, así que anda offline una v
   de los videos que ya cargaste. Al reproducir un clip, la música suena desde el segundo que le toca
   en la línea de tiempo, así se escucha lo que va a quedar en el corte final.
 - Ordenás los clips y exportás **un solo MP4**, en horizontal, vertical 9:16 o UHD.
+- La entrega del MP4 va en **dos pasos**: primero termina el export y después aparece un botón
+  para abrirlo con la hoja de compartir del teléfono (Fotos, Archivos, Drive, Telegram). Son dos
+  pasos porque el navegador solo abre esa hoja como respuesta directa a un toque, y el toque que
+  arrancó el export venció hace varios minutos.
 - **Se guarda solo**: el montaje se autoguarda mientras editás y se le puede poner nombre para
   tener varios proyectos. Si el teléfono cierra la app o se cae el navegador, al volver a abrirla
   te ofrece retomar donde ibas.

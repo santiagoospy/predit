@@ -27,8 +27,10 @@ import {
   type ClipInfo,
 } from './media/probe';
 import {
-  deliverExport,
+  compartirExport,
+  descargarExport,
   exportClips,
+  puedeCompartirVideo,
   type ExportClip,
   type ExportProgress,
 } from './export/exporter';
@@ -118,6 +120,15 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [listo, setListo] = useState<string | null>(null);
+  /**
+   * El MP4 ya exportado, esperando el toque que abre la hoja de compartir.
+   *
+   * Se guarda en vez de entregarse solo porque `navigator.share` pide
+   * activacion de usuario y el toque que arranco el export ya vencio hace
+   * minutos. Queda disponible despues de compartir a proposito: mandarlo a
+   * Archivos y despues a Drive son dos viajes al mismo archivo.
+   */
+  const [entrega, setEntrega] = useState<{ blob: Blob; nombre: string } | null>(null);
   const [avisos, setAvisos] = useState<string[]>([]);
   const [capa, setCapa] = useState<OverlayLayer | null>(null);
   const [capaBusy, setCapaBusy] = useState(false);
@@ -734,6 +745,7 @@ export function App() {
     if (!fileList || fileList.length === 0) return;
     setError(null);
     setListo(null);
+    setEntrega(null);
     setBusy(true);
 
     const nuevos: TimelineClip[] = [];
@@ -834,6 +846,7 @@ export function App() {
       if (!file) return;
       setError(null);
       setListo(null);
+      setEntrega(null);
       setMusicBusy(true);
       detenerMusica();
       try {
@@ -954,6 +967,7 @@ export function App() {
     setCurrentTime(0);
     setError(null);
     setListo(null);
+    setEntrega(null);
     setAvisos([]);
   }, [frenar, soltarMaterial]);
 
@@ -972,6 +986,7 @@ export function App() {
       setCurrentTime(0);
       setError(null);
       setListo(null);
+      setEntrega(null);
       setAvisos(restaurado.avisos);
     },
     [frenar, soltarMaterial],
@@ -1042,6 +1057,7 @@ export function App() {
     frenar();
     setError(null);
     setListo(null);
+    setEntrega(null);
     setAvisos([]);
 
     const controller = new AbortController();
@@ -1080,11 +1096,19 @@ export function App() {
       });
 
       const nombre = `predit-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.mp4`;
-      const via = await deliverExport(blob, nombre);
       setAvisos(avisosDelExport);
-      setListo(
-        `${nombre} · ${formatBytes(blob.size)} · ${via === 'compartido' ? 'listo para compartir' : 'descargado'}`,
-      );
+
+      // Donde hay hoja de compartir, el archivo espera un toque: es la unica
+      // forma de que `navigator.share` no rebote por falta de activacion. En
+      // escritorio no hay hoja y la descarga directa no pide gesto, asi que
+      // sumar un boton seria un paso de mas.
+      if (puedeCompartirVideo()) {
+        setEntrega({ blob, nombre });
+        setListo(`${nombre} · ${formatBytes(blob.size)} · listo para compartir`);
+      } else {
+        descargarExport(blob, nombre);
+        setListo(`${nombre} · ${formatBytes(blob.size)} · descargado`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1092,6 +1116,22 @@ export function App() {
       abortRef.current = null;
     }
   }, [clips, lutLibrary, preset, music, capa, frenar]);
+
+  /**
+   * El segundo paso de la entrega. Es `void` y no `async` en el onClick por una
+   * razon: `navigator.share` tiene que ser lo primero que corra en el handler,
+   * sin un `await` adelante que gaste la activacion del toque.
+   */
+  const onCompartir = useCallback(() => {
+    if (!entrega) return;
+    void compartirExport(entrega.blob, entrega.nombre).then((via) => {
+      setListo(
+        `${entrega.nombre} · ${formatBytes(entrega.blob.size)} · ${
+          via === 'compartido' ? 'compartido' : 'descargado'
+        }`,
+      );
+    });
+  }, [entrega]);
 
   const exportando = progress !== null;
   /** Sin clip no hay nada que tocar: los controles se ven, pero apagados. */
@@ -1736,6 +1776,12 @@ export function App() {
         )}
 
         {listo && <p className="listo">{listo}</p>}
+
+        {entrega && !exportando && (
+          <button className="principal grande" onClick={onCompartir}>
+            {`compartir ${entrega.nombre} →`}
+          </button>
+        )}
         {avisos.map((a) => (
           <p key={a} className="aviso">
             {a}
