@@ -50,6 +50,9 @@ function clip(id: string, file: File, extra: Partial<TimelineClip> = {}): Timeli
     warnings: [],
     lutConvId: null,
     lutLookId: null,
+    lift: 0,
+    gamma: 1,
+    gain: 1,
     fit: 'cover',
     panX: 0,
     panY: 0,
@@ -78,7 +81,7 @@ describe('serializarProyecto', () => {
   it('guarda los ajustes del clip y su huella, pero no el archivo', () => {
     const file = archivo('C0021.MP4', 120, 1700000000000);
     const doc = serializarProyecto(
-      estado([clip('clip1', file, { trimIn: 2, trimOut: 8, speed: 0.5, panX: 0.3 })]),
+      estado([clip('clip1', file, { trimIn: 2, trimOut: 8, speed: 0.5, panX: 0.3, lift: 0.1, gain: 1.2 })]),
       555,
     );
 
@@ -88,6 +91,9 @@ describe('serializarProyecto', () => {
       huella: { nombre: 'C0021.MP4', tamano: 120, fecha: 1700000000000 },
       lutConvId: null,
       lutLookId: null,
+      lift: 0.1,
+      gamma: 1,
+      gain: 1.2,
       fit: 'cover',
       panX: 0.3,
       panY: 0,

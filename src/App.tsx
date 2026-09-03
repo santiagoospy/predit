@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decodeAudioRange } from './audio/decode';
 import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
+import { esNeutro, GRADE_NEUTRO, LIMITES } from './color/grade';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
 import { Recortador } from './edit/Recortador';
 import { unCuadro } from './edit/trim';
@@ -143,6 +144,10 @@ export function App() {
   const panX = selected?.panX ?? 0;
   const panY = selected?.panY ?? 0;
   const volume = selected?.volume ?? 1;
+  const lift = selected?.lift ?? GRADE_NEUTRO.lift;
+  const gamma = selected?.gamma ?? GRADE_NEUTRO.gamma;
+  const gain = selected?.gain ?? GRADE_NEUTRO.gain;
+  const gradeNeutro = esNeutro({ lift, gamma, gain });
   /** Los segundos de material que sobreviven al recorte, antes de la velocidad. */
   const material = Math.max(0, trimOut - trimIn);
 
@@ -362,6 +367,12 @@ export function App() {
   useEffect(() => {
     rendererRef.current?.setLut('look', lutLook?.lut ?? null);
   }, [lutLook]);
+
+  // Las dependencias son los tres numeros y no un objeto: uno armado aca cambiaria
+  // de identidad en cada render y volveria a subir los uniforms sin motivo.
+  useEffect(() => {
+    rendererRef.current?.setGrade({ lift, gamma, gain });
+  }, [lift, gamma, gain]);
 
   // La imagen de la capa se sube a la GPU al cambiarla, no en cada cuadro: un
   // PNG no cambia entre un cuadro y el siguiente.
@@ -750,6 +761,7 @@ export function App() {
           warnings: clipWarnings(info),
           lutConvId: null,
           lutLookId: null,
+          ...GRADE_NEUTRO,
           fit: 'cover',
           panX: 0,
           panY: 0,
@@ -1062,6 +1074,9 @@ export function App() {
         speed: c.speed,
         lutConv: lutLibrary.find((l) => l.id === c.lutConvId)?.lut ?? null,
         lutLook: lutLibrary.find((l) => l.id === c.lutLookId)?.lut ?? null,
+        lift: c.lift,
+        gamma: c.gamma,
+        gain: c.gain,
         fit: c.fit,
         panX: c.panX,
         panY: c.panY,
@@ -1198,9 +1213,10 @@ export function App() {
           onPointerDown={() => setBypass(true)}
           onPointerUp={() => setBypass(false)}
           onPointerLeave={() => setBypass(false)}
-          disabled={(!lutConv && !lutLook) || exportando}
+          disabled={(!lutConv && !lutLook && gradeNeutro) || exportando}
+          title="Manten apretado para ver el cuadro tal como salio de camara"
         >
-          sin lut
+          crudo
         </button>
       </div>
 
@@ -1383,6 +1399,49 @@ export function App() {
             )}
           </>
         )}
+
+        <div className="fila">
+          <span className="comentario">color antes del lut</span>
+          <Deslizador
+            etiqueta="lift"
+            valor={lift}
+            min={LIMITES.lift.min}
+            max={LIMITES.lift.max}
+            paso={LIMITES.lift.paso}
+            onChange={(v) => updateSelected({ lift: v })}
+            texto={lift === GRADE_NEUTRO.lift ? 'neutro' : conSigno(lift)}
+            deshabilitado={enReposo}
+          />
+          <Deslizador
+            etiqueta="gamma"
+            valor={gamma}
+            min={LIMITES.gamma.min}
+            max={LIMITES.gamma.max}
+            paso={LIMITES.gamma.paso}
+            onChange={(v) => updateSelected({ gamma: v })}
+            texto={gamma === GRADE_NEUTRO.gamma ? 'neutro' : gamma.toFixed(2)}
+            deshabilitado={enReposo}
+          />
+          <Deslizador
+            etiqueta="gain"
+            valor={gain}
+            min={LIMITES.gain.min}
+            max={LIMITES.gain.max}
+            paso={LIMITES.gain.paso}
+            onChange={(v) => updateSelected({ gain: v })}
+            texto={gain === GRADE_NEUTRO.gain ? 'neutro' : gain.toFixed(2)}
+            deshabilitado={enReposo}
+          />
+          {!gradeNeutro && (
+            <button
+              className="chico"
+              onClick={() => updateSelected({ ...GRADE_NEUTRO })}
+              disabled={exportando}
+            >
+              restablecer color
+            </button>
+          )}
+        </div>
 
         <LutChooser
           etiqueta="lut de conversión (log → 709)"
@@ -1883,6 +1942,11 @@ function LutChooser({
       </div>
     </div>
   );
+}
+
+/** Un lift de 0.10 se lee mejor como "+0.10" que como "0.10". */
+function conSigno(valor: number): string {
+  return valor > 0 ? '+' + valor.toFixed(2) : valor.toFixed(2);
 }
 
 function Deslizador({

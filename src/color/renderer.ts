@@ -1,4 +1,5 @@
 import type { Lut3D } from './cube';
+import { GRADE_NEUTRO, type Grade } from './grade';
 import { createLutTexture } from './lutTexture';
 import { FRAGMENT_SHADER, VERTEX_SHADER } from './shader';
 
@@ -63,6 +64,8 @@ export class LutRenderer {
   private readonly overlayTex: WebGLTexture;
   private readonly loc: Record<string, WebGLUniformLocation | null> = {};
   private readonly luts: Record<LutSlot, LoadedLut | null> = { conv: null, look: null };
+  /** Correccion primaria del clip de abajo. La capa nunca la usa. */
+  private grade: Grade = GRADE_NEUTRO;
   /** Si ya se subio una imagen de capa. Sin esto, drawOverlay dibujaria basura. */
   private hayOverlay = false;
   private disposed = false;
@@ -88,6 +91,7 @@ export class LutRenderer {
       'uTransform', 'uFrame', 'uOpacity', 'uUsarAlfa',
       'uLutConv', 'uHasConv', 'uSizeConv', 'uDomMinConv', 'uDomMaxConv',
       'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook',
+      'uLift', 'uGamma', 'uGain',
     ];
     for (const name of uniformNames) {
       this.loc[name] = gl.getUniformLocation(this.program, name);
@@ -135,6 +139,18 @@ export class LutRenderer {
       : null;
   }
 
+  /**
+   * Define el lift/gamma/gain del clip de abajo, que se aplica ANTES de los LUTs.
+   *
+   * Aparte de draw() y no un parametro suyo, igual que setLut: el grade no cambia
+   * entre un cuadro y el siguiente, y asi el bucle de dibujo no tiene que ir a
+   * buscarlo sesenta veces por segundo.
+   */
+  setGrade(grade: Grade): void {
+    this.assertAlive();
+    this.grade = grade;
+  }
+
   resize(width: number, height: number): void {
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
@@ -170,6 +186,7 @@ export class LutRenderer {
     this.subirTextura(this.frameTex, source);
     this.bindLut('conv', gl.TEXTURE1, 'Conv', bypass);
     this.bindLut('look', gl.TEXTURE2, 'Look', bypass);
+    this.bindGrade(bypass ? GRADE_NEUTRO : this.grade);
     gl.uniform1f(this.loc['uOpacity']!, 1);
     gl.uniform1i(this.loc['uUsarAlfa']!, 0);
 
@@ -209,6 +226,9 @@ export class LutRenderer {
     // bypass en true: la capa no pasa por los LUTs del clip de abajo.
     this.bindLut('conv', gl.TEXTURE1, 'Conv', true);
     this.bindLut('look', gl.TEXTURE2, 'Look', true);
+    // Y tampoco por el grade del clip: los uniforms son estado del programa, que
+    // la capa comparte, asi que sin esta linea el logo saldria corregido.
+    this.bindGrade(GRADE_NEUTRO);
     gl.uniform1f(this.loc['uOpacity']!, Math.min(1, Math.max(0, opacity)));
     gl.uniform1i(this.loc['uUsarAlfa']!, 1);
 
@@ -292,6 +312,15 @@ export class LutRenderer {
       gl.uniform3f(this.loc['uDomMin' + suffix]!, ...lut.domainMin);
       gl.uniform3f(this.loc['uDomMax' + suffix]!, ...lut.domainMax);
     }
+  }
+
+  private bindGrade(grade: Grade): void {
+    const gl = this.gl;
+    // El mismo valor en los tres canales: hoy las perillas son maestras. Los
+    // uniforms son vec3 para que pasar a R/G/B por separado sea solo tocar aca.
+    gl.uniform3f(this.loc['uLift']!, grade.lift, grade.lift, grade.lift);
+    gl.uniform3f(this.loc['uGamma']!, grade.gamma, grade.gamma, grade.gamma);
+    gl.uniform3f(this.loc['uGain']!, grade.gain, grade.gain, grade.gain);
   }
 
   private assertAlive(): void {

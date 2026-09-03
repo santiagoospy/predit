@@ -1,11 +1,11 @@
 /**
  * Shaders del visor. Un solo programa para dos usos: el clip de abajo, que sale
- * con los dos LUTs aplicados en cadena (conversion de log a Rec.709 primero,
- * look creativo despues) y opaco; y una capa superpuesta, que sale sin LUTs y
- * con su transparencia.
+ * con su correccion primaria (lift, gamma, gain) y los dos LUTs aplicados en
+ * cadena (conversion de log a Rec.709 primero, look creativo despues), opaco; y
+ * una capa superpuesta, que sale sin nada de eso y con su transparencia.
  *
- * La capa no pasa por los LUTs a proposito: un logo ya esta en Rec.709, y
- * meterlo en un LUT de log a 709 le arruinaria el color.
+ * La capa no pasa ni por el grade ni por los LUTs a proposito: un logo ya esta
+ * en Rec.709, y meterlo en un LUT de log a 709 le arruinaria el color.
  */
 
 export const VERTEX_SHADER = `#version 300 es
@@ -48,6 +48,19 @@ uniform vec3  uDomMinLook;
 uniform vec3  uDomMaxLook;
 
 /**
+ * Correccion primaria del clip, ANTES de los LUTs: lift, gamma y gain.
+ *
+ * En vec3 y no en float aunque hoy la UI mueva las tres perillas parejas: el dia
+ * que se quiera corregir una dominante por canal R/G/B, el shader ya esta.
+ *
+ * La misma cuenta, en CPU, esta en color/grade.ts. Si cambia una tiene que
+ * cambiar la otra.
+ */
+uniform vec3 uLift;
+uniform vec3 uGamma;
+uniform vec3 uGain;
+
+/**
  * Lee un LUT 3D con interpolacion trilineal por hardware.
  *
  * El +0.5/size es lo que evita que el color mienta: una textura 3D de lado N
@@ -63,6 +76,13 @@ vec3 applyLut(sampler3D lut, float size, vec3 domMin, vec3 domMax, vec3 color) {
 void main() {
   vec4 src = texture(uFrame, vUv);
   vec3 color = src.rgb;
+
+  // El grade va antes de los LUTs: sobre la senal cruda, todavia en log.
+  // Lift pivotado en el blanco, y max(color, 0) porque pow() de un negativo
+  // (que un lift negativo produce en los negros) devuelve NaN.
+  color = color + uLift * (1.0 - color);
+  color = pow(max(color, vec3(0.0)), 1.0 / uGamma);
+  color = color * uGain;
 
   if (uHasConv) {
     color = applyLut(uLutConv, uSizeConv, uDomMinConv, uDomMaxConv, color);

@@ -23,6 +23,15 @@ export interface TimelineClip {
   warnings: string[];
   lutConvId: string | null;
   lutLookId: string | null;
+  /**
+   * Correccion primaria, ANTES de los LUTs. Ver color/grade.ts.
+   *
+   * Planos y no un objeto anidado porque updateSelected recibe un
+   * Partial<TimelineClip>: asi mover una perilla es updateSelected({ lift: v }).
+   */
+  lift: number;
+  gamma: number;
+  gain: number;
   fit: FitMode;
   panX: number;
   panY: number;

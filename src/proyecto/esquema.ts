@@ -43,6 +43,16 @@ export interface ClipDoc {
   huella: HuellaArchivo;
   lutConvId: string | null;
   lutLookId: string | null;
+  /**
+   * La correccion primaria. Opcionales al LEER: un proyecto guardado antes de que
+   * el color existiera no los trae. Al escribir siempre salen los tres.
+   *
+   * Que el tipo lo diga no es prolijidad: obliga a que quien los lea pase por
+   * sanearGrade() en vez de mandarle un undefined a la GPU.
+   */
+  lift?: number;
+  gamma?: number;
+  gain?: number;
   fit: FitMode;
   panX: number;
   panY: number;
@@ -141,6 +151,9 @@ export function serializarProyecto(estado: EstadoProyecto, ahora = Date.now()): 
       huella: huellaDe(c.file),
       lutConvId: c.lutConvId,
       lutLookId: c.lutLookId,
+      lift: c.lift,
+      gamma: c.gamma,
+      gain: c.gain,
       fit: c.fit,
       panX: c.panX,
       panY: c.panY,

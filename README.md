@@ -15,6 +15,11 @@ codificación de video pasan por WebGL2 y WebCodecs, así que anda offline una v
   cada cámara suele grabar con su propio perfil de color y mezclarlas con un solo LUT global no
   funciona.
 - Biblioteca de LUTs reutilizable: subís cada `.cube` una sola vez.
+- **Lift, gamma y gain por clip, aplicados antes del LUT**: acomodás la exposición y el contraste
+  del material todavía en log —para emparejar una toma con el resto del montaje— y recién después
+  el LUT lo lleva a Rec.709. Es el orden en el que trabaja un colorista; corregir después del LUT
+  sería pelear contra una curva ya aplicada. El botón `crudo` muestra el cuadro tal como salió de
+  cámara, sin color ni LUTs, para comparar.
 - Recorte y velocidad por clip, con un modo "conformar" para cámara lenta limpia sin inventar ni
   perder cuadros.
 - Reencuadre por arrastre (llenar y recortar, o entero con bandas), sin deformar la imagen.

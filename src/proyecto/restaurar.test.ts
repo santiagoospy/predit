@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { LIMITES } from '../color/grade';
 import type { LibraryLut } from '../edit/types';
 import { DEFAULT_PRESET, EXPORT_PRESETS } from '../export/presets';
 import type { ClipInfo } from '../media/probe';
@@ -97,6 +98,40 @@ describe('reconstruir', () => {
     expect(estado.clips[0]).toMatchObject({ trimIn: 3, trimOut: 12, speed: 0.5, panX: 0.4 });
     expect(estado.clips[0]?.info).toBe(INFO);
     expect(estado.avisos).toEqual([]);
+  });
+
+  it('rearma el lift, el gamma y el gain guardados', async () => {
+    const estado = await reconstruir(
+      doc({ clips: [clipDoc('c1', 'C0021.MP4', { lift: 0.1, gamma: 1.4, gain: 0.8 })] }),
+      new Map([['c1', archivo('C0021.MP4')]]),
+      [],
+    );
+
+    expect(estado.clips[0]).toMatchObject({ lift: 0.1, gamma: 1.4, gain: 0.8 });
+  });
+
+  it('un proyecto guardado antes de que existiera el color entra en neutro', async () => {
+    // clipDoc() no trae lift/gamma/gain a proposito: es un documento viejo. Sin el
+    // saneo esos undefined terminarian en gl.uniform3f y pintarian NaN.
+    const estado = await reconstruir(
+      doc({ clips: [clipDoc('c1', 'C0021.MP4')] }),
+      new Map([['c1', archivo('C0021.MP4')]]),
+      [],
+    );
+
+    expect(estado.clips[0]).toMatchObject({ lift: 0, gamma: 1, gain: 1 });
+    expect(estado.avisos).toEqual([]);
+  });
+
+  it('acota un valor de color que quedo fuera de rango', async () => {
+    const estado = await reconstruir(
+      doc({ clips: [clipDoc('c1', 'C0021.MP4', { gain: 99, gamma: -1 })] }),
+      new Map([['c1', archivo('C0021.MP4')]]),
+      [],
+    );
+
+    expect(estado.clips[0]?.gain).toBe(LIMITES.gain.max);
+    expect(estado.clips[0]?.gamma).toBe(LIMITES.gamma.min);
   });
 
   it('el clip cuyo archivo no vino queda afuera, y el resto del montaje entra igual', async () => {

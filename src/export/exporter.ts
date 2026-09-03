@@ -39,6 +39,10 @@ export interface ExportClip {
   speed: number;
   lutConv: Lut3D | null;
   lutLook: Lut3D | null;
+  /** Correccion primaria, que va antes de los LUTs. Ver color/grade.ts. */
+  lift: number;
+  gamma: number;
+  gain: number;
   fit: FitMode;
   panX?: number;
   panY?: number;
@@ -174,6 +178,7 @@ export async function exportClips(
 
       renderer.setLut('conv', clip.lutConv);
       renderer.setLut('look', clip.lutLook);
+      renderer.setGrade({ lift: clip.lift, gamma: clip.gamma, gain: clip.gain });
 
       const clipEndSeconds = timelineSeconds + outputDuration(clip);
       framesWritten = await renderClip(clip, {
