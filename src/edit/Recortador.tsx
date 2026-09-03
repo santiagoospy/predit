@@ -1,6 +1,14 @@
-import { useCallback, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
-import { formatSeconds, limitarEntrada, limitarSalida, segundosDesdeX } from './trim';
+import {
+  formatSeconds,
+  fraccionEnLaVista,
+  limitarEntrada,
+  limitarSalida,
+  segundosDesdeX,
+  vistaDeLaBarra,
+  type Vista,
+} from './trim';
 
 /**
  * Cuanto puede errarle el dedo a una manija y agarrarla igual. Un toque mas
@@ -9,11 +17,6 @@ import { formatSeconds, limitarEntrada, limitarSalida, segundosDesdeX } from './
 const TOLERANCIA_PX = 22;
 
 type Agarre = 'entrada' | 'salida' | 'cabezal';
-
-/** Donde cae un segundo del clip dentro de la barra, de 0 a 1. */
-function fraccionDe(segundos: number, duracion: number): number {
-  return duracion > 0 ? Math.min(1, Math.max(0, segundos / duracion)) : 0;
-}
 
 export interface RecortadorProps {
   duracion: number;
@@ -25,8 +28,6 @@ export interface RecortadorProps {
    * entre entrada y salida: un cuadro en un video, una decima en la musica.
    */
   paso: number;
-  /** Como se lee ese paso en los botones: "Un cuadro", "Una decima". */
-  nombrePaso: string;
   /** El bloque del medio: lo arma el llamador porque cada uso mide otra cosa. */
   centro: { etiqueta: string; valor: string; nota?: string };
   /** Boton extra al principio del pie, como el play propio de la musica. */
@@ -43,6 +44,12 @@ export interface RecortadorProps {
  * Reemplaza a tres deslizadores separados de posicion, entrada y salida, que no
  * dejaban ver que parte sobrevivia al corte. La usan el video y la musica: es el
  * mismo gesto en los dos, y siendo un solo componente no se pueden separar.
+ *
+ * La barra no dibuja siempre el material entero: apenas hay un corte marcado se
+ * estira a ese pedazo (ver `vistaDeLaBarra`), asi el tramo que sobrevive ocupa
+ * el ancho completo y se puede recorrer con el dedo. Eso es lo que reemplazo a
+ * los botones de a un cuadro, que pedian mucho espacio para un ajuste que en el
+ * telefono no se usaba.
  */
 export function Recortador({
   duracion,
@@ -50,7 +57,6 @@ export function Recortador({
   trimOut,
   currentTime,
   paso,
-  nombrePaso,
   centro,
   accion,
   deshabilitado,
@@ -58,8 +64,25 @@ export function Recortador({
   onSeek,
 }: RecortadorProps) {
   const agarre = useRef<Agarre | null>(null);
+  /**
+   * La vista se queda quieta mientras dura un arrastre. Sin esto la escala se
+   * recalcularia en cada pixel y el punto que tenes abajo del dedo se correria
+   * solo, que es la peor sensacion posible en una barra.
+   */
+  const [congelada, setCongelada] = useState<Vista | null>(null);
+  /** El material entero, a pedido, para volver a abrir un corte ya hecho. */
+  const [verTodo, setVerTodo] = useState(false);
 
-  const fraccion = (segundos: number) => fraccionDe(segundos, duracion);
+  // Cambiar de clip empieza de cero: el corte del nuevo manda sobre lo que
+  // hubiera pedido el anterior.
+  useEffect(() => setVerTodo(false), [duracion]);
+
+  const vista: Vista =
+    congelada ??
+    (verTodo ? { desde: 0, hasta: duracion } : vistaDeLaBarra(trimIn, trimOut, duracion));
+  const estirada = vista.desde > 0 || vista.hasta < duracion;
+
+  const fraccion = (segundos: number) => fraccionEnLaVista(segundos, vista);
 
   const moverEntrada = useCallback(
     (segundos: number) => {
@@ -82,13 +105,13 @@ export function Recortador({
   );
 
   const aplicar = useCallback(
-    (que: Agarre, clientX: number, rect: DOMRect) => {
-      const segundos = segundosDesdeX(clientX, rect, duracion);
+    (que: Agarre, clientX: number, rect: DOMRect, enVista: Vista) => {
+      const segundos = segundosDesdeX(clientX, rect, enVista);
       if (que === 'entrada') moverEntrada(segundos);
       else if (que === 'salida') moverSalida(segundos);
       else onSeek(segundos);
     },
-    [duracion, moverEntrada, moverSalida, onSeek],
+    [moverEntrada, moverSalida, onSeek],
   );
 
   const onPointerDown = useCallback(
@@ -110,26 +133,33 @@ export function Recortador({
           : 'cabezal';
 
       agarre.current = que;
+      setCongelada(vista);
       e.currentTarget.setPointerCapture(e.pointerId);
-      aplicar(que, e.clientX, rect);
+      aplicar(que, e.clientX, rect, vista);
     },
-    [deshabilitado, duracion, trimIn, trimOut, aplicar],
+    [deshabilitado, duracion, trimIn, trimOut, vista, aplicar],
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       const que = agarre.current;
       if (!que) return;
-      aplicar(que, e.clientX, e.currentTarget.getBoundingClientRect());
+      aplicar(que, e.clientX, e.currentTarget.getBoundingClientRect(), congelada ?? vista);
     },
-    [aplicar],
+    [aplicar, congelada, vista],
   );
 
   const soltar = useCallback(() => {
+    const que = agarre.current;
     agarre.current = null;
+    setCongelada(null);
+    // Marcar una entrada o una salida redefine el corte, asi que la barra se
+    // vuelve a estirar al pedazo nuevo. Mover el cabezal no: ese es el gesto de
+    // mirar, y no tiene por que cambiar la escala abajo del dedo.
+    if (que === 'entrada' || que === 'salida') setVerTodo(false);
   }, []);
 
-  /** Las flechas del teclado mueven de a un paso, igual que los botones. */
+  /** Las flechas del teclado siguen moviendo de a un paso exacto. */
   const teclas = (e: React.KeyboardEvent, mover: (pasos: number) => void) => {
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
@@ -146,13 +176,7 @@ export function Recortador({
   return (
     <div className="recortador">
       <div className="recortador-tiempos">
-        <Marca
-          etiqueta="entrada"
-          valor={formatSeconds(trimIn)}
-          nombrePaso={nombrePaso}
-          deshabilitado={deshabilitado}
-          onPaso={pasosEntrada}
-        />
+        <Marca etiqueta="entrada" valor={formatSeconds(trimIn)} />
 
         <div className="recortador-marca centrada">
           <span className="etiqueta">{centro.etiqueta}</span>
@@ -160,13 +184,7 @@ export function Recortador({
           {centro.nota && <span className="recortador-nota">{centro.nota}</span>}
         </div>
 
-        <Marca
-          etiqueta="salida"
-          valor={formatSeconds(trimOut)}
-          nombrePaso={nombrePaso}
-          deshabilitado={deshabilitado}
-          onPaso={pasosSalida}
-        />
+        <Marca etiqueta="salida" valor={formatSeconds(trimOut)} />
       </div>
 
       <div
@@ -212,20 +230,16 @@ export function Recortador({
 
       <div className="recortador-pie">
         {accion}
-        <button
-          className="chico"
-          disabled={deshabilitado}
-          onClick={() => onTrim({ trimIn: limitarEntrada(currentTime, trimOut, paso) })}
-        >
-          entrada acá
-        </button>
-        <button
-          className="chico"
-          disabled={deshabilitado}
-          onClick={() => onTrim({ trimOut: limitarSalida(currentTime, trimIn, paso, duracion) })}
-        >
-          salida acá
-        </button>
+        {estirada && (
+          <button
+            className="chico"
+            disabled={deshabilitado}
+            onClick={() => setVerTodo(true)}
+            title="La barra esta estirada al corte: esto muestra el material entero para volver a abrirlo"
+          >
+            todo
+          </button>
+        )}
         <span className="recortador-posicion">
           {formatSeconds(currentTime)} / {formatSeconds(duracion)}
         </span>
@@ -234,39 +248,11 @@ export function Recortador({
   );
 }
 
-function Marca({
-  etiqueta,
-  valor,
-  nombrePaso,
-  deshabilitado,
-  onPaso,
-}: {
-  etiqueta: string;
-  valor: string;
-  nombrePaso: string;
-  deshabilitado: boolean;
-  onPaso: (pasos: number) => void;
-}) {
+function Marca({ etiqueta, valor }: { etiqueta: string; valor: string }) {
   return (
     <div className="recortador-marca">
       <span className="etiqueta">{etiqueta}</span>
       <span className="recortador-valor">{valor}</span>
-      <div className="recortador-cuadros">
-        <button
-          disabled={deshabilitado}
-          onClick={() => onPaso(-1)}
-          title={`${nombrePaso} atrás en ${etiqueta.toLowerCase()}`}
-        >
-          ◀
-        </button>
-        <button
-          disabled={deshabilitado}
-          onClick={() => onPaso(1)}
-          title={`${nombrePaso} adelante en ${etiqueta.toLowerCase()}`}
-        >
-          ▶
-        </button>
-      </div>
     </div>
   );
 }

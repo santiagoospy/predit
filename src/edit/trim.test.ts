@@ -1,23 +1,79 @@
 import { describe, expect, it } from 'vitest';
-import { formatSeconds, limitarEntrada, limitarSalida, segundosDesdeX, unCuadro } from './trim';
+import {
+  formatSeconds,
+  fraccionEnLaVista,
+  limitarEntrada,
+  limitarSalida,
+  segundosDesdeX,
+  unCuadro,
+  vistaDeLaBarra,
+} from './trim';
 
 const rect = { left: 100, width: 400 };
 
+const todo = (duracion: number) => ({ desde: 0, hasta: duracion });
+
 describe('segundosDesdeX', () => {
   it('mapea el toque a la posicion proporcional del clip', () => {
-    expect(segundosDesdeX(100, rect, 10)).toBeCloseTo(0, 6);
-    expect(segundosDesdeX(300, rect, 10)).toBeCloseTo(5, 6);
-    expect(segundosDesdeX(500, rect, 10)).toBeCloseTo(10, 6);
+    expect(segundosDesdeX(100, rect, todo(10))).toBeCloseTo(0, 6);
+    expect(segundosDesdeX(300, rect, todo(10))).toBeCloseTo(5, 6);
+    expect(segundosDesdeX(500, rect, todo(10))).toBeCloseTo(10, 6);
   });
 
   it('el dedo que se va de la barra queda en los extremos, no fuera del clip', () => {
-    expect(segundosDesdeX(-40, rect, 10)).toBe(0);
-    expect(segundosDesdeX(9999, rect, 10)).toBe(10);
+    expect(segundosDesdeX(-40, rect, todo(10))).toBe(0);
+    expect(segundosDesdeX(9999, rect, todo(10))).toBe(10);
   });
 
-  it('sin ancho o sin duracion devuelve cero en vez de NaN', () => {
-    expect(segundosDesdeX(250, { left: 0, width: 0 }, 10)).toBe(0);
-    expect(segundosDesdeX(250, rect, 0)).toBe(0);
+  it('sin ancho o sin duracion devuelve el arranque en vez de NaN', () => {
+    expect(segundosDesdeX(250, { left: 0, width: 0 }, todo(10))).toBe(0);
+    expect(segundosDesdeX(250, rect, todo(0))).toBe(0);
+  });
+
+  it('con la barra estirada a un tramo, el ancho entero es ese tramo', () => {
+    const vista = { desde: 4, hasta: 8 };
+    expect(segundosDesdeX(100, rect, vista)).toBeCloseTo(4, 6);
+    expect(segundosDesdeX(300, rect, vista)).toBeCloseTo(6, 6);
+    expect(segundosDesdeX(500, rect, vista)).toBeCloseTo(8, 6);
+  });
+});
+
+describe('vistaDeLaBarra', () => {
+  it('estira la barra al corte, con aire a los costados para agarrar las manijas', () => {
+    // Corte de 10s dentro de un clip de 100s: 1.5s de aire a cada lado.
+    const vista = vistaDeLaBarra(40, 50, 100);
+    expect(vista.desde).toBeCloseTo(38.5, 6);
+    expect(vista.hasta).toBeCloseTo(51.5, 6);
+  });
+
+  it('el aire no se sale del clip', () => {
+    expect(vistaDeLaBarra(0, 10, 100)).toEqual({ desde: 0, hasta: 11.5 });
+    expect(vistaDeLaBarra(90, 100, 100)).toEqual({ desde: 88.5, hasta: 100 });
+  });
+
+  it('si el corte cubre casi todo el clip, muestra el clip entero', () => {
+    // Sin esto la barra se correria un 2% y el cabezal saltaria por nada.
+    expect(vistaDeLaBarra(1, 99, 100)).toEqual({ desde: 0, hasta: 100 });
+  });
+
+  it('sin clip o con el corte al reves devuelve el clip entero, no un rango vacio', () => {
+    expect(vistaDeLaBarra(0, 0, 0)).toEqual({ desde: 0, hasta: 0 });
+    expect(vistaDeLaBarra(8, 3, 10)).toEqual({ desde: 0, hasta: 10 });
+  });
+});
+
+describe('fraccionEnLaVista', () => {
+  it('ubica un segundo dentro del tramo dibujado', () => {
+    expect(fraccionEnLaVista(6, { desde: 4, hasta: 8 })).toBeCloseTo(0.5, 6);
+  });
+
+  it('lo que cae fuera del tramo se pega a los bordes', () => {
+    expect(fraccionEnLaVista(0, { desde: 4, hasta: 8 })).toBe(0);
+    expect(fraccionEnLaVista(99, { desde: 4, hasta: 8 })).toBe(1);
+  });
+
+  it('un tramo de largo cero no da NaN', () => {
+    expect(fraccionEnLaVista(5, { desde: 5, hasta: 5 })).toBe(0);
   });
 });
 

@@ -5,7 +5,9 @@ import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
 import { esNeutro, GRADE_NEUTRO, LIMITES } from './color/grade';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
+import { moverEnLista } from './edit/orden';
 import { Recortador } from './edit/Recortador';
+import { TiraClips } from './edit/TiraClips';
 import { unCuadro } from './edit/trim';
 import {
   capaEnSegundo,
@@ -66,9 +68,27 @@ function limitarOffset(valor: number): number {
   return Math.min(TOPE_CAPA, Math.max(-TOPE_CAPA, valor));
 }
 
+/**
+ * Las secciones de la hoja de controles, en el orden en que se trabaja: primero
+ * se corta el clip, despues se le acomoda el color, y al final se le suman la
+ * musica, la capa y la salida.
+ */
+const PESTANAS = [
+  { id: 'clip', etiqueta: 'clip' },
+  { id: 'color', etiqueta: 'color' },
+  { id: 'musica', etiqueta: 'música' },
+  { id: 'capa', etiqueta: 'capa' },
+  { id: 'salida', etiqueta: 'salida' },
+  { id: 'proyecto', etiqueta: 'proyecto' },
+] as const;
+
+type Pestana = (typeof PESTANAS)[number]['id'];
+
 export function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** La zona que scrollea: hay que devolverla arriba al cambiar de pestana. */
+  const cuerpoRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<LutRenderer | null>(null);
   const bypassRef = useRef(false);
   const framingRef = useRef<Framing | null>(null);
@@ -124,6 +144,8 @@ export function App() {
   const [capaBusy, setCapaBusy] = useState(false);
   /** Que mueve el dedo cuando se arrastra sobre el visor: el clip o la capa. */
   const [arrastra, setArrastra] = useState<'clip' | 'capa'>('clip');
+  /** Que seccion de la hoja de controles se ve. */
+  const [pestana, setPestana] = useState<Pestana>('clip');
 
   bypassRef.current = bypass;
   clipsRef.current = clips;
@@ -132,6 +154,8 @@ export function App() {
   musicRef.current = music;
 
   const selected = clips.find((c) => c.id === selectedId) ?? null;
+  /** Su lugar en el montaje: lo muestran la tira y las acciones de la pestana. */
+  const indiceSeleccionado = clips.findIndex((c) => c.id === selectedId);
   const lutConv = selected ? (lutLibrary.find((l) => l.id === selected.lutConvId) ?? null) : null;
   const lutLook = selected ? (lutLibrary.find((l) => l.id === selected.lutLookId) ?? null) : null;
 
@@ -791,6 +815,15 @@ export function App() {
     });
   }, []);
 
+  /**
+   * El reordenamiento del arrastre, que a diferencia de `moveClip` puede saltar
+   * varios lugares de una: llevar el cuarto clip al principio corre a los otros
+   * tres, no los intercambia.
+   */
+  const reordenarClips = useCallback((desde: number, hasta: number) => {
+    setClips((prev) => moverEnLista(prev, desde, hasta));
+  }, []);
+
   const moveClip = useCallback((id: string, direction: -1 | 1) => {
     setClips((prev) => {
       const idx = prev.findIndex((c) => c.id === id);
@@ -1108,9 +1141,31 @@ export function App() {
     }
   }, [clips, lutLibrary, preset, music, capa, frenar]);
 
+  /**
+   * Al cambiar de pestana la hoja vuelve arriba. El contenedor es siempre el
+   * mismo, asi que sin esto una seccion corta abre scrolleada por lo que dejo
+   * la anterior.
+   */
+  useEffect(() => {
+    cuerpoRef.current?.scrollTo(0, 0);
+  }, [pestana]);
+
   const exportando = progress !== null;
   /** Sin clip no hay nada que tocar: los controles se ven, pero apagados. */
   const enReposo = !hayClip || exportando;
+
+  /**
+   * Que pestanas tienen algo puesto. Con los paneles escondidos se pierde la
+   * senal de "aca hay algo cargado", y el punto de la fila la devuelve.
+   */
+  const marcada: Record<Pestana, boolean> = {
+    clip: false,
+    color: !gradeNeutro || lutConv !== null || lutLook !== null,
+    musica: music !== null,
+    capa: capa !== null,
+    salida: false,
+    proyecto: false,
+  };
 
   return (
     <div className="app">
@@ -1160,13 +1215,47 @@ export function App() {
             onPointerCancel={onArrastreFin}
           />
           {!hayClip && <div className="lienzo-reposo" />}
+          {hayClip && moviendoCapa && (
+            <p className="pista">/* arrastrá para mover la capa */</p>
+          )}
+          {hayClip && !moviendoCapa && sePuedeReencuadrar && (
+            <p className="pista">/* mové la imagen para reencuadrar */</p>
+          )}
+          {/* El transporte va sobre el cuadro y no en una fila propia debajo: esa
+              fila costaba 60px de alto para tres botones que casi no se tocan, y
+              encima del video quedan justo donde mira el ojo. Van adentro del
+              .marco -y no del .visor- para seguir al cuadro cuando el preset es
+              horizontal y el lienzo no llena el alto del visor. */}
+          {hayClip && (
+            <div className="controles">
+              <button
+                onClick={reproducirTodo}
+                className="principal"
+                disabled={clips.length === 0 || exportando}
+                title="Reproduce la linea de tiempo entera, encadenando los clips"
+              >
+                {todo ? 'pausar()' : 'todo()'}
+              </button>
+              <button
+                onClick={reproducirClip}
+                disabled={enReposo}
+                title="Reproduce solo este clip"
+              >
+                {playing && !todo ? 'pausar()' : 'clip()'}
+              </button>
+              <button
+                className={bypass ? 'activo' : ''}
+                onPointerDown={() => setBypass(true)}
+                onPointerUp={() => setBypass(false)}
+                onPointerLeave={() => setBypass(false)}
+                disabled={(!lutConv && !lutLook && gradeNeutro) || exportando}
+                title="Manten apretado para ver el cuadro tal como salio de camara"
+              >
+                crudo
+              </button>
+            </div>
+          )}
         </div>
-        {hayClip && moviendoCapa && (
-          <p className="pista">/* arrastrá para mover la capa */</p>
-        )}
-        {hayClip && !moviendoCapa && sePuedeReencuadrar && (
-          <p className="pista">/* arrastrá la imagen para reencuadrar */</p>
-        )}
         {!hayClip && (
           <div className="vacio">
             {/* El importar vive aca y no solo en la tira: sobre el visor vacio es
@@ -1184,7 +1273,7 @@ export function App() {
                 }}
               />
             </label>
-            <small>Proxy de la FX6, GoPro o DJI. Los MXF no se pueden abrir en el teléfono.</small>
+            <small>Hola, edita chill, sin presion</small>
           </div>
         )}
         <video
@@ -1196,692 +1285,675 @@ export function App() {
         />
       </main>
 
-      <div className="controles">
-        <button
-          onClick={reproducirTodo}
-          className="principal"
-          disabled={clips.length === 0 || exportando}
-          title="Reproduce la linea de tiempo entera, encadenando los clips"
-        >
-          {todo ? 'pausar()' : 'todo()'}
-        </button>
-        <button onClick={reproducirClip} disabled={enReposo} title="Reproduce solo este clip">
-          {playing && !todo ? 'pausar()' : 'clip()'}
-        </button>
-        <button
-          className={bypass ? 'activo' : ''}
-          onPointerDown={() => setBypass(true)}
-          onPointerUp={() => setBypass(false)}
-          onPointerLeave={() => setBypass(false)}
-          disabled={(!lutConv && !lutLook && gradeNeutro) || exportando}
-          title="Manten apretado para ver el cuadro tal como salio de camara"
-        >
-          crudo
-        </button>
-      </div>
+      {/* La tira quedo en lo minimo: el numero de cada clip y nada mas. Con la
+          tarjeta de antes -nombre, duracion y tres acciones- cuatro clips se
+          comian media pantalla. El nombre y las acciones estan arriba de la barra
+          de recorte, en la pestana clip, que es donde se los va a buscar. */}
+      <TiraClips
+        clips={clips}
+        selectedId={selectedId}
+        deshabilitado={exportando}
+        onSelect={setSelectedId}
+        onReordenar={reordenarClips}
+      />
 
-      <section className="tira">
-        {clips.map((c, i) => (
-          <ClipCard
-            key={c.id}
-            clip={c}
-            index={i}
-            total={clips.length}
-            activo={c.id === selectedId}
-            deshabilitado={exportando}
-            onSelect={() => setSelectedId(c.id)}
-            onRemove={() => removeClip(c.id)}
-            onMoveLeft={() => moveClip(c.id, -1)}
-            onMoveRight={() => moveClip(c.id, 1)}
-          />
-        ))}
-        <label className={`tira-agregar${busy ? ' ocupado' : ''}`}>
-          {busy ? 'leyendo…' : '+ clip'}
-          <input
-            type="file"
-            accept="video/*"
-            multiple
-            onChange={(e) => {
-              void onPickClips(e.target.files);
-              e.target.value = '';
-            }}
-          />
-        </label>
-      </section>
+      {/* El error va afuera de la hoja porque lo pueden disparar cosas de
+          cualquier pestana -importar un clip, subir un LUT, cargar la musica- y
+          adentro de una sola quedaria invisible desde las demas. */}
+      {error && <p className="error error-global">{error}</p>}
 
-      <section className="panel">
-        <Recortador
-          duracion={duration}
-          trimIn={trimIn}
-          trimOut={trimOut}
-          currentTime={currentTime}
-          paso={unCuadro(sourceFps)}
-          nombrePaso="un cuadro"
-          centro={{
-            etiqueta: 'queda',
-            valor: `${(speed > 0 ? material / speed : material).toFixed(1)}s`,
-            nota: Math.abs(speed - 1) > 1e-6 ? `${material.toFixed(1)}s de material` : undefined,
-          }}
-          deshabilitado={enReposo}
-          onTrim={updateSelected}
-          onSeek={seek}
-        />
-
-        <div className="fila">
-          <span className="comentario">velocidad</span>
-          <div className="botones">
+      <div className="hoja">
+        <nav className="pestanas" role="tablist" aria-label="secciones de la edición">
+          {PESTANAS.map(({ id, etiqueta }) => (
             <button
-              className={
-                hayClip && Math.abs(speed - velocidadConforme) < 1e-6 ? 'activo chico' : 'chico'
-              }
-              onClick={() => updateSelected({ speed: velocidadConforme })}
-              disabled={enReposo}
-              title={`Cada cuadro del archivo ocupa un cuadro de la salida (${sourceFps} → ${DEFAULT_FRAME_RATE})`}
+              key={id}
+              id={`pestana-${id}`}
+              role="tab"
+              aria-selected={pestana === id}
+              className={pestana === id ? 'activa' : ''}
+              onClick={() => setPestana(id)}
             >
-              {DEFAULT_FRAME_RATE}p
+              {etiqueta}
+              {marcada[id] && <span className="punto" aria-hidden="true" />}
             </button>
-            {[0.25, 0.5, 1, 2].map((v) => (
-              <button
-                key={v}
-                className={hayClip && Math.abs(speed - v) < 1e-6 ? 'activo chico' : 'chico'}
-                onClick={() => updateSelected({ speed: v })}
-                disabled={enReposo}
-              >
-                {v}x
-              </button>
-            ))}
-          </div>
-        </div>
+          ))}
+        </nav>
 
-        <Deslizador
-          etiqueta="sonido del clip"
-          valor={volume}
-          max={1}
-          paso={0.01}
-          onChange={(v) => updateSelected({ volume: v })}
-          deshabilitado={!selected || !selected.info.hasAudio || !selected.info.audioCanDecode}
-          texto={
-            !selected
-              ? 'sin clip'
-              : !selected.info.hasAudio
-                ? 'sin audio'
-                : !selected.info.audioCanDecode
-                  ? 'no decodifica'
-                  : Math.abs(speed - 1) > 1e-6
-                    ? 'mudo (velocidad)'
-                    : volume === 0
-                      ? 'mudo'
-                      : `${Math.round(volume * 100)}%`
-          }
-        />
+        <div
+          className="hoja-cuerpo"
+          ref={cuerpoRef}
+          role="tabpanel"
+          aria-labelledby={`pestana-${pestana}`}
+        >
+          {pestana === 'clip' && (
+            <section className="panel">
+              {/* Importar y ordenar viven arriba de la barra de recorte, que es
+                  el control con el que se trabaja el clip. */}
+              <div className="fila">
+                <span className="comentario">
+                  {selected
+                    ? `clip ${String(indiceSeleccionado + 1).padStart(2, '0')} · ${selected.info.name}`
+                    : 'clip'}
+                </span>
+                <div className="botones">
+                  <label className={`chico${busy || exportando ? ' ocupado' : ''}`}>
+                    {busy ? 'leyendo…' : '+ clip'}
+                    <input
+                      type="file"
+                      accept="video/*"
+                      multiple
+                      disabled={busy || exportando}
+                      onChange={(e) => {
+                        void onPickClips(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  <button
+                    className="chico"
+                    onClick={() => selectedId && moveClip(selectedId, -1)}
+                    disabled={enReposo || indiceSeleccionado <= 0}
+                    title="Adelantar este clip un lugar en el montaje"
+                  >
+                    ◀ mover
+                  </button>
+                  <button
+                    className="chico"
+                    onClick={() => selectedId && moveClip(selectedId, 1)}
+                    disabled={enReposo || indiceSeleccionado === clips.length - 1}
+                    title="Atrasar este clip un lugar en el montaje"
+                  >
+                    mover ▶
+                  </button>
+                  <button
+                    className="chico"
+                    onClick={() => selectedId && removeClip(selectedId)}
+                    disabled={enReposo}
+                    title="Sacar este clip del montaje"
+                  >
+                    × borrar
+                  </button>
+                </div>
+              </div>
 
-        {selected && (
-          <>
-            {!volumenAjustable && usaSuAudio && volume < 1 && (
-              <p className="aviso">
-                En el iPhone y el iPad el visor no puede bajar el volumen: lo maneja el botón del
-                teléfono. Acá el clip se escucha normal, pero en el MP4 exportado sí sale al{' '}
-                {Math.round(volume * 100)}%.
-              </p>
-            )}
+              <Recortador
+                duracion={duration}
+                trimIn={trimIn}
+                trimOut={trimOut}
+                currentTime={currentTime}
+                paso={unCuadro(sourceFps)}
+                centro={{
+                  etiqueta: 'queda',
+                  valor: `${(speed > 0 ? material / speed : material).toFixed(1)}s`,
+                  nota: Math.abs(speed - 1) > 1e-6 ? `${material.toFixed(1)}s de material` : undefined,
+                }}
+                deshabilitado={enReposo}
+                onTrim={updateSelected}
+                onSeek={seek}
+              />
 
-            {selected.info.hasAudio &&
-              selected.info.audioCanDecode &&
-              Math.abs(speed - 1) > 1e-6 && (
-                <p className="aviso">
-                  El sonido de este clip se silencia porque tiene la velocidad cambiada: estirarlo
-                  junto con la imagen lo desafina. Ponelo en 1× si querés que se escuche.
-                </p>
+              <div className="fila">
+                <span className="comentario">velocidad</span>
+                <div className="botones">
+                  <button
+                    className={
+                      hayClip && Math.abs(speed - velocidadConforme) < 1e-6 ? 'activo chico' : 'chico'
+                    }
+                    onClick={() => updateSelected({ speed: velocidadConforme })}
+                    disabled={enReposo}
+                    title={`Cada cuadro del archivo ocupa un cuadro de la salida (${sourceFps} → ${DEFAULT_FRAME_RATE})`}
+                  >
+                    {DEFAULT_FRAME_RATE}p
+                  </button>
+                  {[0.25, 0.5, 1, 2].map((v) => (
+                    <button
+                      key={v}
+                      className={hayClip && Math.abs(speed - v) < 1e-6 ? 'activo chico' : 'chico'}
+                      onClick={() => updateSelected({ speed: v })}
+                      disabled={enReposo}
+                    >
+                      {v}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <Deslizador
+                etiqueta="sonido del clip"
+                valor={volume}
+                max={1}
+                paso={0.01}
+                onChange={(v) => updateSelected({ volume: v })}
+                deshabilitado={!selected || !selected.info.hasAudio || !selected.info.audioCanDecode}
+                texto={
+                  !selected
+                    ? 'sin clip'
+                    : !selected.info.hasAudio
+                      ? 'sin audio'
+                      : !selected.info.audioCanDecode
+                        ? 'no decodifica'
+                        : Math.abs(speed - 1) > 1e-6
+                          ? 'mudo (velocidad)'
+                          : volume === 0
+                            ? 'mudo'
+                            : `${Math.round(volume * 100)}%`
+                }
+              />
+
+              {selected && (
+                <>
+                  {!volumenAjustable && usaSuAudio && volume < 1 && (
+                    <p className="aviso">
+                      En el iPhone y el iPad el visor no puede bajar el volumen: lo maneja el botón del
+                      teléfono. Acá el clip se escucha normal, pero en el MP4 exportado sí sale al{' '}
+                      {Math.round(volume * 100)}%.
+                    </p>
+                  )}
+
+                  {selected.info.hasAudio &&
+                    selected.info.audioCanDecode &&
+                    Math.abs(speed - 1) > 1e-6 && (
+                      <p className="aviso">
+                        El sonido de este clip se silencia porque tiene la velocidad cambiada: estirarlo
+                        junto con la imagen lo desafina. Ponelo en 1× si querés que se escuche.
+                      </p>
+                    )}
+
+                  {speed < velocidadConforme - 1e-6 && (
+                    <p className="aviso">
+                      A {speed}× no alcanzan los cuadros del archivo ({sourceFps} fps) y algunos se
+                      repiten, así que se va a ver entrecortado. El mínimo limpio para este clip es{' '}
+                      {velocidadConforme.toFixed(2)}×.
+                    </p>
+                  )}
+                </>
               )}
 
-            {speed < velocidadConforme - 1e-6 && (
-              <p className="aviso">
-                A {speed}× no alcanzan los cuadros del archivo ({sourceFps} fps) y algunos se
-                repiten, así que se va a ver entrecortado. El mínimo limpio para este clip es{' '}
-                {velocidadConforme.toFixed(2)}×.
-              </p>
-            )}
-          </>
-        )}
+              <div className="fila">
+                <span className="comentario">encuadre</span>
+                <div className="botones par">
+                  <button
+                    className={hayClip && fit === 'cover' ? 'activo chico' : 'chico'}
+                    onClick={() => updateSelected({ fit: 'cover' })}
+                    disabled={enReposo}
+                  >
+                    llenar
+                  </button>
+                  <button
+                    className={hayClip && fit === 'contain' ? 'activo chico' : 'chico'}
+                    onClick={() => updateSelected({ fit: 'contain' })}
+                    disabled={enReposo}
+                  >
+                    bandas
+                  </button>
+                </div>
+              </div>
 
-        <div className="fila">
-          <span className="comentario">encuadre</span>
-          <div className="botones par">
-            <button
-              className={hayClip && fit === 'cover' ? 'activo chico' : 'chico'}
-              onClick={() => updateSelected({ fit: 'cover' })}
-              disabled={enReposo}
-            >
-              llenar
-            </button>
-            <button
-              className={hayClip && fit === 'contain' ? 'activo chico' : 'chico'}
-              onClick={() => updateSelected({ fit: 'contain' })}
-              disabled={enReposo}
-            >
-              bandas
-            </button>
-          </div>
-        </div>
+              {sePuedeReencuadrar && (
+                <>
+                  {sobrante.overflowX > 0.001 && (
+                    <Deslizador
+                      etiqueta="reencuadre horizontal"
+                      valor={panX}
+                      min={-1}
+                      max={1}
+                      paso={0.01}
+                      onChange={(v) => updateSelected({ panX: v })}
+                      texto={panX === 0 ? 'centrado' : panX < 0 ? 'a la izquierda' : 'a la derecha'}
+                    />
+                  )}
+                  {sobrante.overflowY > 0.001 && (
+                    <Deslizador
+                      etiqueta="reencuadre vertical"
+                      valor={panY}
+                      min={-1}
+                      max={1}
+                      paso={0.01}
+                      onChange={(v) => updateSelected({ panY: v })}
+                      texto={panY === 0 ? 'centrado' : panY < 0 ? 'hacia abajo' : 'hacia arriba'}
+                    />
+                  )}
+                  {(panX !== 0 || panY !== 0) && (
+                    <button
+                      className="chico"
+                      onClick={() => updateSelected({ panX: 0, panY: 0 })}
+                      disabled={exportando}
+                    >
+                      centrar
+                    </button>
+                  )}
+                </>
+              )}
 
-        {sePuedeReencuadrar && (
-          <>
-            {sobrante.overflowX > 0.001 && (
-              <Deslizador
-                etiqueta="reencuadre horizontal"
-                valor={panX}
-                min={-1}
-                max={1}
-                paso={0.01}
-                onChange={(v) => updateSelected({ panX: v })}
-                texto={panX === 0 ? 'centrado' : panX < 0 ? 'a la izquierda' : 'a la derecha'}
+              {/* Avisos del archivo en si -audio que no decodifica, codec raro-,
+                  que hablan del clip entero y no de su color. */}
+              {selected?.warnings.map((w) => (
+                <p key={w} className="aviso">
+                  {w}
+                </p>
+              ))}
+            </section>
+          )}
+
+          {pestana === 'color' && (
+            <section className="panel">
+              <div className="fila">
+                <span className="comentario">color antes del lut</span>
+                <Deslizador
+                  etiqueta="lift"
+                  valor={lift}
+                  min={LIMITES.lift.min}
+                  max={LIMITES.lift.max}
+                  paso={LIMITES.lift.paso}
+                  onChange={(v) => updateSelected({ lift: v })}
+                  texto={lift === GRADE_NEUTRO.lift ? 'neutro' : conSigno(lift)}
+                  deshabilitado={enReposo}
+                />
+                <Deslizador
+                  etiqueta="gamma"
+                  valor={gamma}
+                  min={LIMITES.gamma.min}
+                  max={LIMITES.gamma.max}
+                  paso={LIMITES.gamma.paso}
+                  onChange={(v) => updateSelected({ gamma: v })}
+                  texto={gamma === GRADE_NEUTRO.gamma ? 'neutro' : gamma.toFixed(2)}
+                  deshabilitado={enReposo}
+                />
+                <Deslizador
+                  etiqueta="gain"
+                  valor={gain}
+                  min={LIMITES.gain.min}
+                  max={LIMITES.gain.max}
+                  paso={LIMITES.gain.paso}
+                  onChange={(v) => updateSelected({ gain: v })}
+                  texto={gain === GRADE_NEUTRO.gain ? 'neutro' : gain.toFixed(2)}
+                  deshabilitado={enReposo}
+                />
+                {!gradeNeutro && (
+                  <button
+                    className="chico"
+                    onClick={() => updateSelected({ ...GRADE_NEUTRO })}
+                    disabled={exportando}
+                  >
+                    restablecer color
+                  </button>
+                )}
+              </div>
+
+              <LutChooser
+                etiqueta="lut de conversión (log → 709)"
+                library={lutLibrary}
+                selectedId={selected?.lutConvId ?? null}
+                onSelect={(id) => updateSelected({ lutConvId: id })}
+                onUpload={(f) => void onUploadLut(f, 'conv')}
+                hayClip={hayClip}
+                deshabilitado={enReposo}
               />
-            )}
-            {sobrante.overflowY > 0.001 && (
-              <Deslizador
-                etiqueta="reencuadre vertical"
-                valor={panY}
-                min={-1}
-                max={1}
-                paso={0.01}
-                onChange={(v) => updateSelected({ panY: v })}
-                texto={panY === 0 ? 'centrado' : panY < 0 ? 'hacia abajo' : 'hacia arriba'}
+
+              <LutChooser
+                etiqueta="lut de look (opcional)"
+                library={lutLibrary}
+                selectedId={selected?.lutLookId ?? null}
+                onSelect={(id) => updateSelected({ lutLookId: id })}
+                onUpload={(f) => void onUploadLut(f, 'look')}
+                hayClip={hayClip}
+                deshabilitado={enReposo}
               />
-            )}
-            {(panX !== 0 || panY !== 0) && (
+
+              {/* El diagnostico vive aca y no en `clip`: la curva y las primarias
+                  con las que grabo la camara son el dato que se mira para elegir
+                  el LUT de conversion. */}
+              {selected && <Diagnostico info={selected.info} />}
+            </section>
+          )}
+
+          {pestana === 'musica' && (
+            <section className="panel">
+              <div className="fila">
+                <span className="comentario">
+                  música
+                  {music
+                    ? ` · ${music.origen === 'clip' ? 'del clip ' : ''}${music.name} ` +
+                      `(${formatDuration(music.duracionSeconds)})`
+                    : ''}
+                </span>
+                <div className="botones">
+                  <label
+                    className={`chico${musicBusy || exportando || clips.length === 0 ? ' ocupado' : ''}`}
+                  >
+                    {musicBusy ? 'leyendo…' : music ? 'cambiar audio' : '+ audio'}
+                    <input
+                      type="file"
+                      accept="audio/*,video/*"
+                      disabled={musicBusy || exportando || clips.length === 0}
+                      onChange={(e) => {
+                        const archivo = e.target.files?.[0];
+                        void cargarMusica(archivo, 'archivo', archivo?.name ?? 'audio');
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {selected && (
+                    <button
+                      className="chico"
+                      disabled={!selected.info.hasAudio || musicBusy || exportando}
+                      onClick={() =>
+                        void cargarMusica(selected.file, 'clip', selected.info.name, selected.id)
+                      }
+                      title={
+                        selected.info.hasAudio
+                          ? 'Saca el audio de este video y lo usa como música sobre todo el proyecto'
+                          : 'Este clip no tiene pista de audio'
+                      }
+                    >
+                      usar audio del clip
+                    </button>
+                  )}
+                  {music && (
+                    <button className="chico" onClick={quitarMusica} disabled={exportando}>
+                      quitar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {music && (
+                <>
+                  <Recortador
+                    duracion={music.duracionSeconds}
+                    trimIn={music.startInMusic}
+                    trimOut={music.endInMusic}
+                    currentTime={musicTime}
+                    // La musica no tiene cuadros: el ajuste fino va de a una decima.
+                    paso={PASO_MUSICA}
+                    centro={{
+                      etiqueta: 'suena',
+                      valor: `${(music.endInMusic - music.startInMusic).toFixed(1)}s`,
+                      nota: `${duracionTotal.toFixed(1)}s de video`,
+                    }}
+                    accion={
+                      <button
+                        className="chico"
+                        disabled={exportando}
+                        onClick={() => (musicPlaying ? detenerMusica() : escucharMusica(musicTime))}
+                        title={musicPlaying ? 'Pausar el tema' : 'Escuchar el tema desde el cabezal'}
+                      >
+                        {musicPlaying ? '❚❚' : '▶'}
+                      </button>
+                    }
+                    deshabilitado={exportando}
+                    onTrim={(p) => {
+                      if (p.trimIn !== undefined) updateMusic({ startInMusic: p.trimIn });
+                      if (p.trimOut !== undefined) updateMusic({ endInMusic: p.trimOut });
+                    }}
+                    onSeek={(s) => {
+                      // Tocar la barra pausa: reengancharlo en cada pixel del
+                      // arrastre reiniciaria el tema decenas de veces por segundo.
+                      // Para marcar escuchando estan "Entrada acá" / "Salida acá",
+                      // que no mueven el cabezal.
+                      if (musicPlaying) detenerMusica();
+                      setMusicTime(s);
+                    }}
+                  />
+                  <Deslizador
+                    etiqueta="volumen de la música"
+                    valor={music.volume}
+                    max={1}
+                    paso={0.01}
+                    onChange={(v) => updateMusic({ volume: v })}
+                    texto={music.volume === 0 ? 'muda' : `${Math.round(music.volume * 100)}%`}
+                  />
+                  <Deslizador
+                    etiqueta="fundido de salida"
+                    valor={music.fadeOut}
+                    max={5}
+                    paso={0.1}
+                    onChange={(v) => updateMusic({ fadeOut: v })}
+                    texto={music.fadeOut === 0 ? 'sin fundido' : `${music.fadeOut.toFixed(1)} s`}
+                  />
+                  {music.endInMusic - music.startInMusic < duracionTotal && (
+                    <p className="aviso">
+                      El pedazo elegido dura{' '}
+                      {formatDuration(music.endInMusic - music.startInMusic)} de los{' '}
+                      {formatDuration(duracionTotal)} del video: el resto queda sin música.
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {pestana === 'capa' && (
+            <section className="panel">
+              <div className="fila">
+                <span className="comentario">
+                  capa{capa ? ` · ${capa.name} (${capa.width}×${capa.height})` : ''}
+                </span>
+                <div className="botones">
+                  <label
+                    className={`chico${capaBusy || exportando || clips.length === 0 ? ' ocupado' : ''}`}
+                  >
+                    {capaBusy ? 'leyendo…' : capa ? 'cambiar imagen' : '+ imagen'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      disabled={capaBusy || exportando || clips.length === 0}
+                      onChange={(e) => {
+                        void cargarCapa(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {capa && (
+                    <button className="chico" onClick={quitarCapa} disabled={exportando}>
+                      quitar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {capa && (
+                <>
+                  <Recortador
+                    duracion={duracionTotal}
+                    trimIn={capa.startSeconds}
+                    trimOut={capa.endSeconds}
+                    // La capa se marca contra la LINEA DE TIEMPO entera, no contra el
+                    // clip: por eso el cabezal es el segundo del montaje y no el del
+                    // <video>, y por eso puede cruzar un corte.
+                    currentTime={tiempoEnLaLinea(offsetSeleccionado, currentTime, trimIn, speed)}
+                    paso={unCuadro(DEFAULT_FRAME_RATE)}
+                    centro={{
+                      etiqueta: 'se ve',
+                      valor: `${(capa.endSeconds - capa.startSeconds).toFixed(1)}s`,
+                      nota: `${duracionTotal.toFixed(1)}s de video`,
+                    }}
+                    deshabilitado={exportando}
+                    onTrim={(p) => {
+                      if (p.trimIn !== undefined) updateCapa({ startSeconds: p.trimIn });
+                      if (p.trimOut !== undefined) updateCapa({ endSeconds: p.trimOut });
+                    }}
+                    onSeek={irALaLinea}
+                  />
+
+                  <div className="fila">
+                    <span className="comentario">el dedo sobre el visor mueve</span>
+                    <div className="botones">
+                      <button
+                        className={arrastra === 'clip' ? 'activo chico' : 'chico'}
+                        onClick={() => setArrastra('clip')}
+                        disabled={exportando}
+                        title="Arrastrar reencuadra el clip de abajo"
+                      >
+                        el clip
+                      </button>
+                      <button
+                        className={arrastra === 'capa' ? 'activo chico' : 'chico'}
+                        onClick={() => setArrastra('capa')}
+                        disabled={exportando}
+                        title="Arrastrar mueve la capa por el cuadro"
+                      >
+                        la capa
+                      </button>
+                    </div>
+                  </div>
+
+                  <Deslizador
+                    etiqueta="tamaño de la capa"
+                    valor={capa.scale}
+                    min={0.05}
+                    max={2}
+                    paso={0.01}
+                    onChange={(v) => updateCapa({ scale: v })}
+                    texto={`${Math.round(capa.scale * 100)}%`}
+                    deshabilitado={exportando}
+                  />
+                  <Deslizador
+                    etiqueta="opacidad de la capa"
+                    valor={capa.opacity}
+                    max={1}
+                    paso={0.01}
+                    onChange={(v) => updateCapa({ opacity: v })}
+                    texto={capa.opacity === 0 ? 'invisible' : `${Math.round(capa.opacity * 100)}%`}
+                    deshabilitado={exportando}
+                  />
+
+                  <div className="fila">
+                    <span className="comentario">animación</span>
+                  </div>
+                  <Deslizador
+                    etiqueta="entrada"
+                    valor={capa.entradaSeconds}
+                    max={3}
+                    paso={0.1}
+                    onChange={(v) => updateCapa({ entradaSeconds: v })}
+                    texto={capa.entradaSeconds === 0 ? 'de golpe' : `${capa.entradaSeconds.toFixed(1)} s`}
+                    deshabilitado={exportando}
+                  />
+                  <Deslizador
+                    etiqueta="entra desde"
+                    valor={capa.scaleEntrada}
+                    min={0.2}
+                    max={2}
+                    paso={0.05}
+                    onChange={(v) => updateCapa({ scaleEntrada: v })}
+                    texto={
+                      capa.entradaSeconds === 0
+                        ? 'sin entrada'
+                        : capa.scaleEntrada === 1
+                          ? 'sin zoom'
+                          : `${Math.round(capa.scaleEntrada * 100)}%`
+                    }
+                    deshabilitado={exportando || capa.entradaSeconds === 0}
+                  />
+                  <Deslizador
+                    etiqueta="salida"
+                    valor={capa.salidaSeconds}
+                    max={3}
+                    paso={0.1}
+                    onChange={(v) => updateCapa({ salidaSeconds: v })}
+                    texto={capa.salidaSeconds === 0 ? 'de golpe' : `${capa.salidaSeconds.toFixed(1)} s`}
+                    deshabilitado={exportando}
+                  />
+                  <Deslizador
+                    etiqueta="sale hacia"
+                    valor={capa.scaleSalida}
+                    min={0.2}
+                    max={2}
+                    paso={0.05}
+                    onChange={(v) => updateCapa({ scaleSalida: v })}
+                    texto={
+                      capa.salidaSeconds === 0
+                        ? 'sin salida'
+                        : capa.scaleSalida === 1
+                          ? 'sin zoom'
+                          : `${Math.round(capa.scaleSalida * 100)}%`
+                    }
+                    deshabilitado={exportando || capa.salidaSeconds === 0}
+                  />
+
+                  {capa.entradaSeconds + capa.salidaSeconds > capa.endSeconds - capa.startSeconds && (
+                    <p className="aviso">
+                      La entrada y la salida no entran en los{' '}
+                      {(capa.endSeconds - capa.startSeconds).toFixed(1)}s que dura la capa: se acortan
+                      en proporción, así que la capa se ve entera apenas un instante.
+                    </p>
+                  )}
+
+                  {capa.opacity > 0 && capa.endSeconds <= capa.startSeconds && (
+                    <p className="aviso">
+                      La marca de salida de la capa está antes que la de entrada: no se va a ver en
+                      ningún cuadro.
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {pestana === 'salida' && (
+            <section className="panel">
+              <div className="fila">
+                <span className="comentario">salida</span>
+                <div className="botones">
+                  {EXPORT_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      className={p.id === preset.id ? 'activo chico' : 'chico'}
+                      onClick={() => setPreset(p)}
+                      disabled={exportando}
+                      title={p.detalle}
+                    >
+                      {p.slug}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <button
-                className="chico"
-                onClick={() => updateSelected({ panX: 0, panY: 0 })}
-                disabled={exportando}
+                className="principal grande"
+                onClick={() => void onExport()}
+                disabled={clips.length === 0 || exportando}
               >
-                centrar
+                {clips.length === 0
+                  ? 'exportar mp4 →'
+                  : !exportando
+                    ? `exportar mp4 · ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${duracionTotal.toFixed(1)}s →`
+                    : progress?.fase === 'audio'
+                      ? 'preparando el audio…'
+                      : `exportando clip ${(progress?.clipIndex ?? 0) + 1} de ${progress?.clipCount ?? clips.length} · ${Math.round((progress?.fraction ?? 0) * 100)}%`}
               </button>
-            )}
-          </>
-        )}
 
-        <div className="fila">
-          <span className="comentario">color antes del lut</span>
-          <Deslizador
-            etiqueta="lift"
-            valor={lift}
-            min={LIMITES.lift.min}
-            max={LIMITES.lift.max}
-            paso={LIMITES.lift.paso}
-            onChange={(v) => updateSelected({ lift: v })}
-            texto={lift === GRADE_NEUTRO.lift ? 'neutro' : conSigno(lift)}
-            deshabilitado={enReposo}
-          />
-          <Deslizador
-            etiqueta="gamma"
-            valor={gamma}
-            min={LIMITES.gamma.min}
-            max={LIMITES.gamma.max}
-            paso={LIMITES.gamma.paso}
-            onChange={(v) => updateSelected({ gamma: v })}
-            texto={gamma === GRADE_NEUTRO.gamma ? 'neutro' : gamma.toFixed(2)}
-            deshabilitado={enReposo}
-          />
-          <Deslizador
-            etiqueta="gain"
-            valor={gain}
-            min={LIMITES.gain.min}
-            max={LIMITES.gain.max}
-            paso={LIMITES.gain.paso}
-            onChange={(v) => updateSelected({ gain: v })}
-            texto={gain === GRADE_NEUTRO.gain ? 'neutro' : gain.toFixed(2)}
-            deshabilitado={enReposo}
-          />
-          {!gradeNeutro && (
-            <button
-              className="chico"
-              onClick={() => updateSelected({ ...GRADE_NEUTRO })}
-              disabled={exportando}
-            >
-              restablecer color
-            </button>
+              {exportando && (
+                <div className="barra-progreso">
+                  <div style={{ width: `${(progress?.fraction ?? 0) * 100}%` }} />
+                </div>
+              )}
+
+              {listo && <p className="listo">{listo}</p>}
+              {avisos.map((a) => (
+                <p key={a} className="aviso">
+                  {a}
+                </p>
+              ))}
+            </section>
+          )}
+
+          {pestana === 'proyecto' && (
+            <PanelProyecto
+              nombre={proyecto.nombre}
+              guardadoEn={proyecto.guardadoEn}
+              lista={proyecto.lista}
+              deshabilitado={exportando}
+              hayMontaje={clips.length > 0 || music !== null || capa !== null}
+              onGuardarComo={(nuevo) => void proyecto.guardarComo(nuevo)}
+              onAbrir={(id) => void proyecto.abrir(id)}
+              onBorrar={(id) => void proyecto.borrar(id)}
+              onNuevo={() => void proyecto.nuevo()}
+              onRefrescar={proyecto.refrescar}
+            />
           )}
         </div>
-
-        <LutChooser
-          etiqueta="lut de conversión (log → 709)"
-          library={lutLibrary}
-          selectedId={selected?.lutConvId ?? null}
-          onSelect={(id) => updateSelected({ lutConvId: id })}
-          onUpload={(f) => void onUploadLut(f, 'conv')}
-          hayClip={hayClip}
-          deshabilitado={enReposo}
-        />
-        <LutChooser
-          etiqueta="lut de look (opcional)"
-          library={lutLibrary}
-          selectedId={selected?.lutLookId ?? null}
-          onSelect={(id) => updateSelected({ lutLookId: id })}
-          onUpload={(f) => void onUploadLut(f, 'look')}
-          hayClip={hayClip}
-          deshabilitado={enReposo}
-        />
-
-        {selected && (
-          <>
-            {selected.warnings.map((w) => (
-              <p key={w} className="aviso">
-                {w}
-              </p>
-            ))}
-            <Diagnostico info={selected.info} />
-          </>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="fila">
-          <span className="comentario">
-            música
-            {music
-              ? ` · ${music.origen === 'clip' ? 'del clip ' : ''}${music.name} ` +
-                `(${formatDuration(music.duracionSeconds)})`
-              : ''}
-          </span>
-          <div className="botones">
-            <label
-              className={`chico${musicBusy || exportando || clips.length === 0 ? ' ocupado' : ''}`}
-            >
-              {musicBusy ? 'leyendo…' : music ? 'cambiar audio' : '+ audio'}
-              <input
-                type="file"
-                accept="audio/*,video/*"
-                disabled={musicBusy || exportando || clips.length === 0}
-                onChange={(e) => {
-                  const archivo = e.target.files?.[0];
-                  void cargarMusica(archivo, 'archivo', archivo?.name ?? 'audio');
-                  e.target.value = '';
-                }}
-              />
-            </label>
-            {selected && (
-              <button
-                className="chico"
-                disabled={!selected.info.hasAudio || musicBusy || exportando}
-                onClick={() =>
-                  void cargarMusica(selected.file, 'clip', selected.info.name, selected.id)
-                }
-                title={
-                  selected.info.hasAudio
-                    ? 'Saca el audio de este video y lo usa como música sobre todo el proyecto'
-                    : 'Este clip no tiene pista de audio'
-                }
-              >
-                usar audio del clip
-              </button>
-            )}
-            {music && (
-              <button className="chico" onClick={quitarMusica} disabled={exportando}>
-                quitar
-              </button>
-            )}
-          </div>
-        </div>
-
-        {music && (
-          <>
-            <Recortador
-              duracion={music.duracionSeconds}
-              trimIn={music.startInMusic}
-              trimOut={music.endInMusic}
-              currentTime={musicTime}
-              // La musica no tiene cuadros: el ajuste fino va de a una decima.
-              paso={PASO_MUSICA}
-              nombrePaso="una décima"
-              centro={{
-                etiqueta: 'suena',
-                valor: `${(music.endInMusic - music.startInMusic).toFixed(1)}s`,
-                nota: `${duracionTotal.toFixed(1)}s de video`,
-              }}
-              accion={
-                <button
-                  className="chico"
-                  disabled={exportando}
-                  onClick={() => (musicPlaying ? detenerMusica() : escucharMusica(musicTime))}
-                  title={musicPlaying ? 'Pausar el tema' : 'Escuchar el tema desde el cabezal'}
-                >
-                  {musicPlaying ? '❚❚' : '▶'}
-                </button>
-              }
-              deshabilitado={exportando}
-              onTrim={(p) => {
-                if (p.trimIn !== undefined) updateMusic({ startInMusic: p.trimIn });
-                if (p.trimOut !== undefined) updateMusic({ endInMusic: p.trimOut });
-              }}
-              onSeek={(s) => {
-                // Tocar la barra pausa: reengancharlo en cada pixel del
-                // arrastre reiniciaria el tema decenas de veces por segundo.
-                // Para marcar escuchando estan "Entrada acá" / "Salida acá",
-                // que no mueven el cabezal.
-                if (musicPlaying) detenerMusica();
-                setMusicTime(s);
-              }}
-            />
-            <Deslizador
-              etiqueta="volumen de la música"
-              valor={music.volume}
-              max={1}
-              paso={0.01}
-              onChange={(v) => updateMusic({ volume: v })}
-              texto={music.volume === 0 ? 'muda' : `${Math.round(music.volume * 100)}%`}
-            />
-            <Deslizador
-              etiqueta="fundido de salida"
-              valor={music.fadeOut}
-              max={5}
-              paso={0.1}
-              onChange={(v) => updateMusic({ fadeOut: v })}
-              texto={music.fadeOut === 0 ? 'sin fundido' : `${music.fadeOut.toFixed(1)} s`}
-            />
-            {music.endInMusic - music.startInMusic < duracionTotal && (
-              <p className="aviso">
-                El pedazo elegido dura{' '}
-                {formatDuration(music.endInMusic - music.startInMusic)} de los{' '}
-                {formatDuration(duracionTotal)} del video: el resto queda sin música.
-              </p>
-            )}
-          </>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="fila">
-          <span className="comentario">
-            capa{capa ? ` · ${capa.name} (${capa.width}×${capa.height})` : ''}
-          </span>
-          <div className="botones">
-            <label
-              className={`chico${capaBusy || exportando || clips.length === 0 ? ' ocupado' : ''}`}
-            >
-              {capaBusy ? 'leyendo…' : capa ? 'cambiar imagen' : '+ imagen'}
-              <input
-                type="file"
-                accept="image/*"
-                disabled={capaBusy || exportando || clips.length === 0}
-                onChange={(e) => {
-                  void cargarCapa(e.target.files?.[0]);
-                  e.target.value = '';
-                }}
-              />
-            </label>
-            {capa && (
-              <button className="chico" onClick={quitarCapa} disabled={exportando}>
-                quitar
-              </button>
-            )}
-          </div>
-        </div>
-
-        {capa && (
-          <>
-            <Recortador
-              duracion={duracionTotal}
-              trimIn={capa.startSeconds}
-              trimOut={capa.endSeconds}
-              // La capa se marca contra la LINEA DE TIEMPO entera, no contra el
-              // clip: por eso el cabezal es el segundo del montaje y no el del
-              // <video>, y por eso puede cruzar un corte.
-              currentTime={tiempoEnLaLinea(offsetSeleccionado, currentTime, trimIn, speed)}
-              paso={unCuadro(DEFAULT_FRAME_RATE)}
-              nombrePaso="un cuadro"
-              centro={{
-                etiqueta: 'se ve',
-                valor: `${(capa.endSeconds - capa.startSeconds).toFixed(1)}s`,
-                nota: `${duracionTotal.toFixed(1)}s de video`,
-              }}
-              deshabilitado={exportando}
-              onTrim={(p) => {
-                if (p.trimIn !== undefined) updateCapa({ startSeconds: p.trimIn });
-                if (p.trimOut !== undefined) updateCapa({ endSeconds: p.trimOut });
-              }}
-              onSeek={irALaLinea}
-            />
-
-            <div className="fila">
-              <span className="comentario">el dedo sobre el visor mueve</span>
-              <div className="botones">
-                <button
-                  className={arrastra === 'clip' ? 'activo chico' : 'chico'}
-                  onClick={() => setArrastra('clip')}
-                  disabled={exportando}
-                  title="Arrastrar reencuadra el clip de abajo"
-                >
-                  el clip
-                </button>
-                <button
-                  className={arrastra === 'capa' ? 'activo chico' : 'chico'}
-                  onClick={() => setArrastra('capa')}
-                  disabled={exportando}
-                  title="Arrastrar mueve la capa por el cuadro"
-                >
-                  la capa
-                </button>
-              </div>
-            </div>
-
-            <Deslizador
-              etiqueta="tamaño de la capa"
-              valor={capa.scale}
-              min={0.05}
-              max={2}
-              paso={0.01}
-              onChange={(v) => updateCapa({ scale: v })}
-              texto={`${Math.round(capa.scale * 100)}%`}
-              deshabilitado={exportando}
-            />
-            <Deslizador
-              etiqueta="opacidad de la capa"
-              valor={capa.opacity}
-              max={1}
-              paso={0.01}
-              onChange={(v) => updateCapa({ opacity: v })}
-              texto={capa.opacity === 0 ? 'invisible' : `${Math.round(capa.opacity * 100)}%`}
-              deshabilitado={exportando}
-            />
-
-            <div className="fila">
-              <span className="comentario">animación</span>
-            </div>
-            <Deslizador
-              etiqueta="entrada"
-              valor={capa.entradaSeconds}
-              max={3}
-              paso={0.1}
-              onChange={(v) => updateCapa({ entradaSeconds: v })}
-              texto={capa.entradaSeconds === 0 ? 'de golpe' : `${capa.entradaSeconds.toFixed(1)} s`}
-              deshabilitado={exportando}
-            />
-            <Deslizador
-              etiqueta="entra desde"
-              valor={capa.scaleEntrada}
-              min={0.2}
-              max={2}
-              paso={0.05}
-              onChange={(v) => updateCapa({ scaleEntrada: v })}
-              texto={
-                capa.entradaSeconds === 0
-                  ? 'sin entrada'
-                  : capa.scaleEntrada === 1
-                    ? 'sin zoom'
-                    : `${Math.round(capa.scaleEntrada * 100)}%`
-              }
-              deshabilitado={exportando || capa.entradaSeconds === 0}
-            />
-            <Deslizador
-              etiqueta="salida"
-              valor={capa.salidaSeconds}
-              max={3}
-              paso={0.1}
-              onChange={(v) => updateCapa({ salidaSeconds: v })}
-              texto={capa.salidaSeconds === 0 ? 'de golpe' : `${capa.salidaSeconds.toFixed(1)} s`}
-              deshabilitado={exportando}
-            />
-            <Deslizador
-              etiqueta="sale hacia"
-              valor={capa.scaleSalida}
-              min={0.2}
-              max={2}
-              paso={0.05}
-              onChange={(v) => updateCapa({ scaleSalida: v })}
-              texto={
-                capa.salidaSeconds === 0
-                  ? 'sin salida'
-                  : capa.scaleSalida === 1
-                    ? 'sin zoom'
-                    : `${Math.round(capa.scaleSalida * 100)}%`
-              }
-              deshabilitado={exportando || capa.salidaSeconds === 0}
-            />
-
-            {capa.entradaSeconds + capa.salidaSeconds > capa.endSeconds - capa.startSeconds && (
-              <p className="aviso">
-                La entrada y la salida no entran en los{' '}
-                {(capa.endSeconds - capa.startSeconds).toFixed(1)}s que dura la capa: se acortan
-                en proporción, así que la capa se ve entera apenas un instante.
-              </p>
-            )}
-
-            {capa.opacity > 0 && capa.endSeconds <= capa.startSeconds && (
-              <p className="aviso">
-                La marca de salida de la capa está antes que la de entrada: no se va a ver en
-                ningún cuadro.
-              </p>
-            )}
-          </>
-        )}
-      </section>
-
-      <section className="panel">
-        <div className="fila">
-          <span className="comentario">salida</span>
-          <div className="botones">
-            {EXPORT_PRESETS.map((p) => (
-              <button
-                key={p.id}
-                className={p.id === preset.id ? 'activo chico' : 'chico'}
-                onClick={() => setPreset(p)}
-                disabled={exportando}
-                title={p.detalle}
-              >
-                {p.slug}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <button
-          className="principal grande"
-          onClick={() => void onExport()}
-          disabled={clips.length === 0 || exportando}
-        >
-          {clips.length === 0
-            ? 'exportar mp4 →'
-            : !exportando
-              ? `exportar mp4 · ${clips.length} clip${clips.length === 1 ? '' : 's'} · ${duracionTotal.toFixed(1)}s →`
-              : progress?.fase === 'audio'
-                ? 'preparando el audio…'
-                : `exportando clip ${(progress?.clipIndex ?? 0) + 1} de ${progress?.clipCount ?? clips.length} · ${Math.round((progress?.fraction ?? 0) * 100)}%`}
-        </button>
-
-        {exportando && (
-          <div className="barra-progreso">
-            <div style={{ width: `${(progress?.fraction ?? 0) * 100}%` }} />
-          </div>
-        )}
-
-        {listo && <p className="listo">{listo}</p>}
-        {avisos.map((a) => (
-          <p key={a} className="aviso">
-            {a}
-          </p>
-        ))}
-        {error && <p className="error">{error}</p>}
-      </section>
-
-      <PanelProyecto
-        nombre={proyecto.nombre}
-        guardadoEn={proyecto.guardadoEn}
-        lista={proyecto.lista}
-        deshabilitado={exportando}
-        hayMontaje={clips.length > 0 || music !== null || capa !== null}
-        onGuardarComo={(nuevo) => void proyecto.guardarComo(nuevo)}
-        onAbrir={(id) => void proyecto.abrir(id)}
-        onBorrar={(id) => void proyecto.borrar(id)}
-        onNuevo={() => void proyecto.nuevo()}
-        onRefrescar={proyecto.refrescar}
-      />
-    </div>
-  );
-}
-
-function ClipCard({
-  clip,
-  index,
-  total,
-  activo,
-  deshabilitado,
-  onSelect,
-  onRemove,
-  onMoveLeft,
-  onMoveRight,
-}: {
-  clip: TimelineClip;
-  index: number;
-  total: number;
-  activo: boolean;
-  deshabilitado: boolean;
-  onSelect: () => void;
-  onRemove: () => void;
-  onMoveLeft: () => void;
-  onMoveRight: () => void;
-}) {
-  return (
-    <div className={`tira-clip${activo ? ' activo' : ''}`} onClick={onSelect}>
-      <span className="num">
-        {String(index + 1).padStart(2, '0')}
-        {clip.warnings.length > 0 && (
-          <span className="aviso-badge" title={clip.warnings.join(' ')}>
-            {' '}
-            ⚠
-          </span>
-        )}
-      </span>
-      <span className="nombre">
-        {clip.info.name} · {formatDuration(clipOutputDuration(clip))}
-      </span>
-      <div className="acciones">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onMoveLeft();
-          }}
-          disabled={index === 0 || deshabilitado}
-        >
-          ◀
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          disabled={deshabilitado}
-        >
-          ×
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onMoveRight();
-          }}
-          disabled={index === total - 1 || deshabilitado}
-        >
-          ▶
-        </button>
       </div>
     </div>
   );
