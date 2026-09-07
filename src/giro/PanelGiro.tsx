@@ -81,7 +81,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    * al final le impone su zoom a todo lo anterior. Con tope, ese instante se
    * corrige solo hasta donde entra.
    */
-  const [recorteMax, setRecorteMax] = useState(15);
+  const [recorteMax, setRecorteMax] = useState(30);
   /**
    * El codigo de ejes escrito a mano, para cuando el declarado no alcanza.
    *
@@ -214,7 +214,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
               <Deslizador
                 etiqueta="suavidad"
                 valor={suavidad}
-                min={0.05}
+                min={0.02}
                 max={2}
                 paso={0.05}
                 onChange={setSuavidad}
@@ -244,7 +244,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 etiqueta="recorte máximo"
                 valor={recorteMax}
                 min={0}
-                max={50}
+                max={60}
                 paso={1}
                 onChange={setRecorteMax}
                 texto={`${recorteMax}%`}
@@ -267,12 +267,14 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
 
               <p className="nota">
                 /* recorte {recorte}% · corrige hasta{' '}
-                {estabilizacion.correccionMaxGrados.toFixed(1)}° · focal {origenFocal} */
+                {estabilizacion.correccionMaxGrados.toFixed(1)}° · al{' '}
+                {(estabilizacion.ganancia * 100).toFixed(0)}% · focal {origenFocal} */
               </p>
-              {estabilizacion.zoomIdeal > estabilizacion.zoom + 0.005 && (
+              {estabilizacion.ganancia < 0.995 && (
                 <p className="aviso">
-                  Para corregir todo harían falta {ideal}% de recorte. Los momentos más bruscos se
-                  corrigen a medias para no comerse el encuadre del resto del clip.
+                  Corrigiendo al {(estabilizacion.ganancia * 100).toFixed(0)}%: para sacar todo el
+                  temblor harían falta {ideal}% de recorte y el tope está en {recorteMax}%. Subí el
+                  recorte máximo, o bajá la suavidad para conformarte con sacar el temblor rápido.
                 </p>
               )}
             </>

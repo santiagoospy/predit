@@ -515,3 +515,110 @@ describe('la correccion va en la direccion correcta', () => {
     expect(despues).toBeLessThan(antes * 0.5);
   });
 });
+
+/**
+ * Que pasa cuando el temblor pide mas recorte del que hay disponible.
+ *
+ * Es el caso normal en material muy movido, y la forma de resolverlo decide si
+ * la funcion sirve o no: acotando cuadro por cuadro, la correccion se satura
+ * contra el tope y deja de estabilizar -y encima se ve igual con cualquier
+ * ajuste, porque el tope tapa las diferencias-.
+ */
+describe('cuando el recorte no alcanza', () => {
+  const base = {
+    suavidad: 1,
+    desfase: 0,
+    focalPx: 554,
+    ancho: 1920,
+    alto: 1080,
+    mapeo: DIRECTO,
+    zoomMaximo: 4,
+  };
+  const cuadros = Array.from({ length: 60 }, (_, i) => 0.5 + (i / 60) * 2);
+
+  /** Un temblor fuerte, del orden del de una camara caminando. */
+  const fuerte = (): MuestraGiro[] => {
+    const muestras: MuestraGiro[] = [];
+    for (let i = 0; i <= 600; i++) {
+      const t = i / 200;
+      muestras.push({ segundo: t, x: 60 * Math.sin(t * 12.6), y: 45 * Math.sin(t * 11.1 + 1), z: 0 });
+    }
+    return muestras;
+  };
+
+  it('avisa que esta corrigiendo de menos', () => {
+    const holgado = prepararEstabilizacion(fuerte(), cuadros, base);
+    const apretado = prepararEstabilizacion(fuerte(), cuadros, { ...base, zoomMaximo: 1.1 });
+
+    expect(holgado.ganancia).toBe(1);
+    expect(apretado.ganancia).toBeLessThan(1);
+    expect(apretado.zoomIdeal).toBeGreaterThan(apretado.zoom);
+  });
+
+  it('la correccion sigue siendo proporcional al temblor, no saturada', () => {
+    // La prueba de que conserva la forma: con MAS suavidad la correccion tiene
+    // que ser mas grande, aun con el recorte topeado. Acotando cuadro a cuadro
+    // los dos daban exactamente lo mismo, que era el sintoma en pantalla.
+    const opciones = { ...base, zoomMaximo: 1.15 };
+    const desplaza = (suavidad: number) => {
+      const e = prepararEstabilizacion(fuerte(), cuadros, { ...opciones, suavidad });
+      let peor = 0;
+      for (const t of cuadros) {
+        const m = e.matrizEn(t);
+        const cx = base.ancho / 2;
+        const cy = base.alto / 2;
+        const w = m[6]! * cx + m[7]! * cy + m[8]!;
+        peor = Math.max(
+          peor,
+          Math.hypot(
+            (m[0]! * cx + m[1]! * cy + m[2]!) / w - cx,
+            (m[3]! * cx + m[4]! * cy + m[5]!) / w - cy,
+          ),
+        );
+      }
+      return peor;
+    };
+
+    expect(desplaza(1.5)).toBeGreaterThan(desplaza(0.3) * 1.05);
+  });
+
+  it('aun corrigiendo de menos, achica el temblor en vez de agrandarlo', () => {
+    const muestras = fuerte();
+    const e = prepararEstabilizacion(muestras, cuadros, { ...base, zoomMaximo: 1.1 });
+    const reales = integrar(muestras, DIRECTO);
+
+    // La misma medida que el test de direccion: cuanto se mueve el mundo visto
+    // por el pixel del centro.
+    const mirada = (m: number[], t: number) => {
+      const cx = base.ancho / 2;
+      const cy = base.alto / 2;
+      const w = m[6]! * cx + m[7]! * cy + m[8]!;
+      const px = (m[0]! * cx + m[1]! * cy + m[2]!) / w;
+      const py = (m[3]! * cx + m[4]! * cy + m[5]!) / w;
+      const v = [(px - cx) / base.focalPx, (py - cy) / base.focalPx, 1];
+      const r = aMatriz(orientacionEn(reales, t));
+      const d = [
+        r[0]! * v[0]! + r[1]! * v[1]! + r[2]! * v[2]!,
+        r[3]! * v[0]! + r[4]! * v[1]! + r[5]! * v[2]!,
+        r[6]! * v[0]! + r[7]! * v[1]! + r[8]! * v[2]!,
+      ];
+      const n = Math.hypot(d[0]!, d[1]!, d[2]!);
+      return [d[0]! / n, d[1]! / n, d[2]! / n] as const;
+    };
+    const abanico = (ds: (readonly [number, number, number])[]) => {
+      let peor = 0;
+      for (const a of ds) {
+        for (const b of ds) {
+          const c = Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+          peor = Math.max(peor, (Math.acos(c) * 180) / Math.PI);
+        }
+      }
+      return peor;
+    };
+
+    const identidad = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const antes = abanico(cuadros.map((t) => mirada(identidad, t)));
+    const despues = abanico(cuadros.map((t) => mirada(e.matrizEn(t), t)));
+    expect(despues).toBeLessThan(antes);
+  });
+});

@@ -259,10 +259,17 @@ export interface Estabilizacion {
   /**
    * Cuanto haria falta agrandar para corregir TODO sin bordes negros.
    *
-   * Si es mayor que `zoom`, los momentos mas violentos se estan corrigiendo a
-   * medias. Se muestra para que la decision sea del usuario y no una sorpresa.
+   * Si es mayor que `zoom`, no alcanza el recorte y se esta corrigiendo de
+   * menos. Se muestra para que la decision sea del usuario y no una sorpresa.
    */
   zoomIdeal: number;
+  /**
+   * Que fraccion de la correccion se esta aplicando, de 0 a 1.
+   *
+   * Menos de 1 significa que el recorte disponible no alcanzaba. Es el numero
+   * que explica por que un clip muy movido sigue temblando.
+   */
+  ganancia: number;
   /** El angulo maximo que llega a corregir, en grados. Es el diagnostico. */
   correccionMaxGrados: number;
 }
@@ -336,23 +343,34 @@ function esquinasDentro(q: Quat, o: Opciones, zoom: number): boolean {
 }
 
 /**
- * Recorta la correccion de un cuadro hasta donde entre con el zoom disponible.
+ * Que fraccion de la correccion entra en el recorte disponible.
  *
- * Se interpola desde "no corregir nada" hacia la correccion completa y se busca
- * el punto justo antes de que asome un borde negro. Asi un golpe puntual se
- * corrige a medias -que ya es mejor que nada- en vez de obligar a recortar el
- * clip entero.
+ * Cuando el temblor pide mas recorte del que el usuario acepta perder, hay que
+ * corregir de menos. La forma de hacerlo importa muchisimo:
+ *
+ * Acotar CADA CUADRO por separado -dejar el maximo que entre en cada uno- suena
+ * razonable y esta mal: satura todos los cuadros contra el mismo tope, y ahi la
+ * correccion deja de ser proporcional al temblor. El resultado no estabiliza
+ * nada, es una deformacion saturada que ademas se ve igual con cualquier ajuste,
+ * porque el tope tapa las diferencias.
+ *
+ * Escalar TODO por un mismo factor conserva la forma: la camara virtual queda a
+ * mitad de camino entre la real y la suave, y eso si reduce el temblor, aunque
+ * sea de a poco.
  */
-function acotar(q: Quat, o: Opciones, zoom: number): Quat {
-  if (esquinasDentro(q, o, zoom)) return q;
+function gananciaQueEntra(correcciones: Quat[], o: Opciones, zoom: number): number {
+  const entra = (g: number) =>
+    correcciones.every((q) => esquinasDentro(slerp(IDENTIDAD, q, g), o, zoom));
+
+  if (entra(1)) return 1;
   let bajo = 0;
   let alto = 1;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < 20; i++) {
     const medio = (bajo + alto) / 2;
-    if (esquinasDentro(slerp(IDENTIDAD, q, medio), o, zoom)) bajo = medio;
+    if (entra(medio)) bajo = medio;
     else alto = medio;
   }
-  return slerp(IDENTIDAD, q, bajo);
+  return bajo;
 }
 
 function zoomNecesario(correcciones: Quat[], o: Opciones): number {
@@ -425,6 +443,7 @@ export function prepararEstabilizacion(
   const deLosCuadros = cuadros.map(correccionEn);
   const zoomIdeal = zoomNecesario(deLosCuadros, o);
   const zoom = Math.min(zoomIdeal, Math.max(1, o.zoomMaximo));
+  const ganancia = gananciaQueEntra(deLosCuadros, o, zoom);
 
   let maximo = 0;
   for (const q of deLosCuadros) {
@@ -432,13 +451,14 @@ export function prepararEstabilizacion(
   }
 
   const matriz = (segundo: number) =>
-    matrizDeMuestreo(acotar(correccionEn(segundo), o, zoom), o, zoom);
+    matrizDeMuestreo(slerp(IDENTIDAD, correccionEn(segundo), ganancia), o, zoom);
 
   return {
     matrizEn: matriz,
     matrizUvEn: (segundo) => aEspacioUv(matriz(segundo), o),
     zoom,
     zoomIdeal,
+    ganancia,
     correccionMaxGrados: (maximo * 180) / Math.PI,
   };
 }
