@@ -269,19 +269,26 @@ const CLAVES: ((h: HuellaArchivo) => string)[] = [
 /**
  * Reparte los archivos que eligio el usuario entre los lugares que los esperan.
  *
- * Cada archivo se usa una sola vez: dos clips distintos del mismo video (dos
- * cortes del mismo material, algo normal) no se llenan con un solo archivo
- * elegido, y el segundo queda pendiente hasta que lo elijan de nuevo.
+ * Un archivo puede llenar VARIOS lugares, pero solo si la huella coincide
+ * entera: es el caso de un clip partido en dos, donde los dos pedazos son
+ * literalmente el mismo video y pedirlo dos veces seria absurdo.
+ *
+ * Con las claves laxas se sigue gastando un archivo por lugar. Ahi la
+ * coincidencia es una corazonada -mismo nombre, otra fecha- y repartir un solo
+ * archivo entre varios lugares podria llenarlos todos con el video equivocado.
  */
 export function emparejar(pendientes: Faltante[], files: File[]): Emparejamiento {
   const asignados = new Map<string, File>();
   const libres = files.map((file) => ({ file, tomado: false }));
 
-  for (const clave of CLAVES) {
+  for (const [nivel, clave] of CLAVES.entries()) {
+    const exacta = nivel === 0;
     for (const pendiente of pendientes) {
       if (asignados.has(pendiente.slot)) continue;
       const buscado = clave(pendiente.huella);
-      const candidato = libres.find((l) => !l.tomado && clave(huellaDe(l.file)) === buscado);
+      const candidato = libres.find(
+        (l) => (exacta || !l.tomado) && clave(huellaDe(l.file)) === buscado,
+      );
       if (candidato) {
         candidato.tomado = true;
         asignados.set(pendiente.slot, candidato.file);

@@ -250,7 +250,7 @@ describe('emparejar', () => {
     expect(emparejar(pendientes, [parecido, exacto]).asignados.get('c1')).toBe(exacto);
   });
 
-  it('un mismo archivo no llena dos lugares: el segundo queda pendiente', () => {
+  it('un archivo llena todos los pedazos de un clip partido', () => {
     const dosCortes = faltantes(
       serializarProyecto(
         estado([
@@ -260,7 +260,23 @@ describe('emparejar', () => {
       ),
     );
     const uno = archivo('C0021.MP4', 120, 1000);
-    const { asignados } = emparejar(dosCortes, [uno]);
+    const { asignados, sobrantes } = emparejar(dosCortes, [uno]);
+    expect(asignados.get('c1')).toBe(uno);
+    expect(asignados.get('c2')).toBe(uno);
+    expect(sobrantes).toEqual([]);
+  });
+
+  it('pero uno que solo coincide de nombre sigue llenando un solo lugar', () => {
+    const dosParecidos = faltantes(
+      serializarProyecto(
+        estado([
+          clip('c1', archivo('C0021.MP4', 120, 1000)),
+          clip('c2', archivo('C0021.MP4', 340, 2000)),
+        ]),
+      ),
+    );
+    const uno = archivo('C0021.MP4', 120, 1000);
+    const { asignados } = emparejar(dosParecidos, [uno]);
     expect(asignados.get('c1')).toBe(uno);
     expect(asignados.has('c2')).toBe(false);
   });

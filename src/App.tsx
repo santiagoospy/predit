@@ -5,6 +5,7 @@ import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
 import { esNeutro, GRADE_NEUTRO, LIMITES } from './color/grade';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
+import { partir } from './edit/cortar';
 import { moverEnLista } from './edit/orden';
 import { Recortador } from './edit/Recortador';
 import { TiraClips } from './edit/TiraClips';
@@ -816,6 +817,42 @@ export function App() {
   }, []);
 
   /**
+   * Parte el clip seleccionado en dos por donde quedo el cabezal.
+   *
+   * El pedazo de la izquierda se queda con el id, y por eso sigue seleccionado:
+   * asi el <video> no se recarga y la musica sacada de este clip -que lo busca
+   * por id- no se queda huerfana. El de la derecha es un clip nuevo, entra justo
+   * atras y a partir de ahi los dos son independientes: se reordenan, se pintan
+   * y se borran por separado.
+   *
+   * La url va aparte y no compartida: `removeClip` revoca la del clip que saca,
+   * y con una sola url borrar un pedazo dejaria al hermano en negro.
+   */
+  const cortarClip = useCallback(() => {
+    setClips((prev) => {
+      const idx = prev.findIndex((c) => c.id === selectedId);
+      const clip = prev[idx];
+      if (!clip) return prev;
+      const corte = partir(clip, currentTime, unCuadro(clip.info.frameRate));
+      if (!corte) return prev;
+
+      const copia = prev.slice();
+      copia.splice(
+        idx,
+        1,
+        { ...clip, trimOut: corte.izquierda },
+        {
+          ...clip,
+          id: nextId('clip'),
+          url: URL.createObjectURL(clip.file),
+          trimIn: corte.derecha,
+        },
+      );
+      return copia;
+    });
+  }, [selectedId, currentTime]);
+
+  /**
    * El reordenamiento del arrastre, que a diferencia de `moveClip` puede saltar
    * varios lugares de una: llevar el cuarto clip al principio corre a los otros
    * tres, no los intercambia.
@@ -1153,6 +1190,9 @@ export function App() {
   const exportando = progress !== null;
   /** Sin clip no hay nada que tocar: los controles se ven, pero apagados. */
   const enReposo = !hayClip || exportando;
+  /** Si el cabezal esta parado en un punto donde el clip se puede partir en dos. */
+  const puedeCortar =
+    !enReposo && selected !== null && partir(selected, currentTime, unCuadro(sourceFps)) !== null;
 
   /**
    * Que pestanas tienen algo puesto. Con los paneles escondidos se pierde la
@@ -1364,6 +1404,14 @@ export function App() {
                     title="Atrasar este clip un lugar en el montaje"
                   >
                     mover ▶
+                  </button>
+                  <button
+                    className="chico"
+                    onClick={cortarClip}
+                    disabled={!puedeCortar}
+                    title="Partir este clip en dos por donde esta el cabezal"
+                  >
+                    ✂ cortar
                   </button>
                   <button
                     className="chico"
