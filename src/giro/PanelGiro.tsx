@@ -31,7 +31,7 @@ export function PanelGiro({ clip, cabezal }: Props) {
     if (!clip) return;
     setLeyendo(true);
     const arranque = performance.now();
-    const r = await leerGiroscopio(clip.file);
+    const r = await leerGiroscopio(clip.file, clip.info.displayWidth);
     setTardo(performance.now() - arranque);
     setResultado(r);
     setDeQuien(clip.id);
@@ -84,6 +84,15 @@ export function PanelGiro({ clip, cabezal }: Props) {
               <span className="nombre">abarca</span>
               <span className="detalle">
                 {vigente.duracionSeconds.toFixed(2)}s de {clip?.info.durationSeconds.toFixed(2)}s
+              </span>
+            </li>
+            <li className="hay">
+              <span className="marca">·</span>
+              <span className="nombre">óptica</span>
+              <span className="detalle">
+                {vigente.optica
+                  ? `${vigente.optica.focalMm.toFixed(0)}mm · f=${vigente.optica.focalPx.toFixed(0)}px`
+                  : 'no la escribió'}
               </span>
             </li>
             <li className="hay">

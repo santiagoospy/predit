@@ -15,7 +15,7 @@
  * contra camaras de verdad.
  */
 
-import type { MuestraGiro } from './tipos';
+import type { MuestraGiro, Optica } from './tipos';
 
 /** Los tags que interesan. El resto de la muestra se saltea. */
 const TAG_FRECUENCIA = 0xe435;
@@ -23,6 +23,20 @@ const TAG_ESCALA_UNIDAD = 0xe438;
 const TAG_ESCALA = 0xe439;
 const TAG_ORIENTACION = 0xe43a;
 const TAG_DATOS = 0xe43b;
+/**
+ * Los tags de la optica, con los que se calcula la focal en pixeles.
+ *
+ * La focal viene en nanometros (el eje z de la posicion del lente) y el tamano
+ * del pixel tambien, asi que dividiendo una por el otro sale la focal medida en
+ * pixeles del sensor. Como el video no usa el sensor entero, despues hay que
+ * escalarla del recorte al ancho de la imagen.
+ */
+const TAG_PIXEL_UNIDAD = 0xe406;
+const TAG_PIXEL_TAMANO = 0xe407;
+const TAG_RECORTE_UNIDAD = 0xe408;
+const TAG_RECORTE_TAMANO = 0xe40a;
+const TAG_LENTE_POSICION = 0xe410;
+
 /** Un tag que contiene otros tags adentro. */
 const TAG_CONTENEDOR = 0x8300;
 /**
@@ -48,6 +62,52 @@ interface Crudo {
   enRadianes: boolean;
   frecuencia: number | null;
   orientacion: string | null;
+  /** Focal en nanometros, del eje z de la posicion del lente. */
+  focalNm: number | null;
+  /** Ancho del pixel, en 1/pixelUnidad metros. */
+  pixelAncho: number | null;
+  pixelUnidad: number | null;
+  /** Ancho del recorte del sensor, en 1/recorteUnidad pixeles. */
+  recorteAncho: number | null;
+  recorteUnidad: number | null;
+}
+
+function crudoVacio(): Crudo {
+  return {
+    ternas: [],
+    escala: null,
+    enRadianes: false,
+    frecuencia: null,
+    orientacion: null,
+    focalNm: null,
+    pixelAncho: null,
+    pixelUnidad: null,
+    recorteAncho: null,
+    recorteUnidad: null,
+  };
+}
+
+/**
+ * La focal en pixeles de la imagen final.
+ *
+ * Devuelve null en cuanto falte cualquiera de las piezas: una focal inventada
+ * corrige de mas o de menos, y es preferible que el usuario la ajuste a ojo
+ * antes que darle un numero que parece bueno y no lo es.
+ */
+function optica(c: Crudo, anchoDelVideo: number): Optica | null {
+  if (!c.focalNm || !c.pixelAncho || !c.recorteAncho) return null;
+  // Los dos vienen en nanometros por defecto; si la camara declara otra unidad
+  // se convierte, porque el cociente tiene que ser adimensional.
+  const pixelNm = (c.pixelAncho * 1e9) / (c.pixelUnidad ?? 1e9);
+  if (pixelNm <= 0) return null;
+  const recortePx = c.recorteAncho / (c.recorteUnidad ?? 1);
+  if (recortePx <= 0) return null;
+
+  const focalEnPixelesDelSensor = c.focalNm / pixelNm;
+  return {
+    focalPx: focalEnPixelesDelSensor * (anchoDelVideo / recortePx),
+    focalMm: c.focalNm / 1e6,
+  };
 }
 
 function esRtmd(vista: DataView): boolean {
@@ -90,6 +150,17 @@ function recorrer(vista: DataView, desde: number, hasta: number, salida: Crudo):
         vista.getUint8(inicio + 1),
         vista.getUint8(inicio + 2),
       );
+    } else if (tag === TAG_LENTE_POSICION && largo >= 12) {
+      // x, y, z en nanometros; la focal es la z.
+      salida.focalNm = vista.getInt32(inicio + 8);
+    } else if (tag === TAG_PIXEL_TAMANO && largo >= 4) {
+      salida.pixelAncho = vista.getInt16(inicio);
+    } else if (tag === TAG_PIXEL_UNIDAD && largo >= 4) {
+      salida.pixelUnidad = vista.getInt32(inicio);
+    } else if (tag === TAG_RECORTE_TAMANO && largo >= 8) {
+      salida.recorteAncho = vista.getUint32(inicio);
+    } else if (tag === TAG_RECORTE_UNIDAD && largo >= 4) {
+      salida.recorteUnidad = vista.getInt32(inicio);
     } else if (tag === TAG_DATOS && largo >= 8) {
       // Cantidad, largo de cada terna (siempre 6 = tres enteros de 16 bits), y
       // despues las ternas uno atras del otro.
@@ -121,8 +192,12 @@ function recorrer(vista: DataView, desde: number, hasta: number, salida: Crudo):
  * giroscopio: la camara no guarda un timestamp por medicion, pero si dice a
  * cuantos hertz corre, y con eso alcanza.
  */
-export function leerSony(muestras: { bytes: ArrayBuffer; segundo: number }[]): MuestraGiro[] {
+export function leerSony(
+  muestras: { bytes: ArrayBuffer; segundo: number }[],
+  anchoDelVideo = 0,
+): { muestras: MuestraGiro[]; optica: Optica | null } {
   const salida: MuestraGiro[] = [];
+  let lente: Optica | null = null;
   let escala: number | null = null;
   let enRadianes = false;
   let frecuencia: number | null = null;
@@ -131,14 +206,10 @@ export function leerSony(muestras: { bytes: ArrayBuffer; segundo: number }[]): M
     const vista = new DataView(muestra.bytes);
     if (!esRtmd(vista)) continue;
 
-    const crudo: Crudo = {
-      ternas: [],
-      escala: null,
-      enRadianes: false,
-      frecuencia: null,
-      orientacion: null,
-    };
+    const crudo = crudoVacio();
     recorrer(vista, CABECERA, vista.byteLength, crudo);
+    // La optica se lee una sola vez: no cambia dentro de un clip.
+    if (!lente && anchoDelVideo > 0) lente = optica(crudo, anchoDelVideo);
     if (crudo.ternas.length === 0) continue;
 
     // La escala y la frecuencia suelen venir solo en algunas muestras: la
@@ -167,5 +238,5 @@ export function leerSony(muestras: { bytes: ArrayBuffer; segundo: number }[]): M
     }
   }
 
-  return salida;
+  return { muestras: salida, optica: lente };
 }

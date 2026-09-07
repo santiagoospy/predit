@@ -86,7 +86,7 @@ function muestraGoPro(ternas: [number, number, number][], escala = 10): ArrayBuf
 
 describe('leerSony', () => {
   it('aplica la escala y reparte los tiempos con la frecuencia', () => {
-    const muestras = leerSony([
+    const { muestras } = leerSony([
       { bytes: muestraSony([[100, 200, 300], [400, 500, 600]], { escala: 100, frecuencia: 8 }), segundo: 1 },
     ]);
     expect(muestras).toHaveLength(2);
@@ -101,14 +101,14 @@ describe('leerSony', () => {
   });
 
   it('pasa a grados cuando la camara declara radianes', () => {
-    const muestras = leerSony([
+    const { muestras } = leerSony([
       { bytes: muestraSony([[100, 0, 0]], { escala: 100, radianes: true }), segundo: 0 },
     ]);
     expect(muestras[0]!.x).toBeCloseTo(180 / Math.PI);
   });
 
   it('lee valores negativos', () => {
-    const muestras = leerSony([{ bytes: muestraSony([[-100, 0, 0]], { escala: 100 }), segundo: 0 }]);
+    const { muestras } = leerSony([{ bytes: muestraSony([[-100, 0, 0]], { escala: 100 }), segundo: 0 }]);
     expect(muestras[0]!.x).toBeCloseTo(-1);
   });
 
@@ -120,7 +120,7 @@ describe('leerSony', () => {
     sinEscala[1] = 0x1c;
     sinEscala.set(cuerpo, 0x1c);
 
-    const muestras = leerSony([
+    const { muestras } = leerSony([
       { bytes: conEscala, segundo: 0 },
       { bytes: sinEscala.buffer, segundo: 1 },
     ]);
@@ -128,7 +128,7 @@ describe('leerSony', () => {
   });
 
   it('ignora una muestra que no es RTMD en vez de romper', () => {
-    expect(leerSony([{ bytes: new Uint8Array([1, 2, 3, 4]).buffer, segundo: 0 }])).toEqual([]);
+    expect(leerSony([{ bytes: new Uint8Array([1, 2, 3, 4]).buffer, segundo: 0 }]).muestras).toEqual([]);
   });
 });
 

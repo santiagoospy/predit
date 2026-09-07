@@ -12,7 +12,7 @@
 import { leerGoPro } from './gopro';
 import { leerMuestras, pistasDeMetadata, type PistaMeta } from './mp4';
 import { leerSony } from './sony';
-import type { DatosGiro, MuestraGiro, SinGiro } from './tipos';
+import type { DatosGiro, MuestraGiro, Optica, SinGiro } from './tipos';
 
 /** Los formatos de pista que sabemos leer. */
 const FORMATOS = { gpmd: 'gopro', rtmd: 'sony' } as const;
@@ -39,7 +39,15 @@ function frecuenciaReal(muestras: MuestraGiro[]): number {
   return span > 0 ? (muestras.length - 1) / span : 0;
 }
 
-export async function leerGiroscopio(file: File): Promise<DatosGiro | SinGiro> {
+/**
+ * @param anchoDelVideo el ancho en pixeles de la imagen, que hace falta para
+ * pasar la focal de pixeles del sensor a pixeles de la salida. Sin el, la
+ * optica vuelve en null y el usuario la ajusta a mano.
+ */
+export async function leerGiroscopio(
+  file: File,
+  anchoDelVideo = 0,
+): Promise<DatosGiro | SinGiro> {
   let pistas: PistaMeta[];
   try {
     pistas = await pistasDeMetadata(file);
@@ -69,7 +77,17 @@ export async function leerGiroscopio(file: File): Promise<DatosGiro | SinGiro> {
   try {
     const bytes = await leerMuestras(file, recortadas);
     const crudas = bytes.map((b, i) => ({ bytes: b, segundo: recortadas[i]!.segundo }));
-    const muestras = fuente === 'sony' ? leerSony(crudas) : leerGoPro(crudas);
+    let muestras: MuestraGiro[];
+    let optica: Optica | null = null;
+    if (fuente === 'sony') {
+      const leido = leerSony(crudas, anchoDelVideo);
+      muestras = leido.muestras;
+      optica = leido.optica;
+    } else {
+      // GoPro no escribe la optica en la pista: su lente es fijo y conocido,
+      // pero eso ya seria un perfil de lente y hoy no lo tenemos.
+      muestras = leerGoPro(crudas);
+    }
 
     if (muestras.length === 0) {
       return {
@@ -84,6 +102,7 @@ export async function leerGiroscopio(file: File): Promise<DatosGiro | SinGiro> {
       muestras,
       hz: frecuenciaReal(muestras),
       duracionSeconds: muestras[muestras.length - 1]!.segundo - muestras[0]!.segundo,
+      optica,
     };
   } catch (e) {
     return { motivo: `No se pudo interpretar la pista: ${comoTexto(e)}`, pistas: nombres };
