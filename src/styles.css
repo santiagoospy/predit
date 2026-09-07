@@ -1024,3 +1024,15 @@ label.chico.ocupado {
   color: var(--tenue);
   font-size: 11px;
 }
+
+/* Las curvas del giroscopio: el ancho lo pone el panel, el alto es fijo para
+ * que la forma de la curva se lea sin ocupar media pantalla del telefono. */
+.giro-curvas {
+  display: block;
+  width: 100%;
+  height: 120px;
+  margin-top: 8px;
+  background: var(--fondo);
+  border: 1px solid var(--borde-tenue);
+  border-radius: var(--radio);
+}

@@ -44,6 +44,7 @@ import {
   EXPORT_PRESETS,
   type ExportPreset,
 } from './export/presets';
+import { PanelGiro } from './giro/PanelGiro';
 import { guardarLut, guardarMedio } from './proyecto/almacen';
 import { horaCorta, huellaDe } from './proyecto/esquema';
 import { PanelProyecto } from './proyecto/PanelProyecto';
@@ -1649,6 +1650,10 @@ export function App() {
               ))}
             </section>
           )}
+
+          {/* Prueba de lectura del giroscopio. Va con el clip porque es una
+              propiedad del archivo, como los avisos de arriba. */}
+          {pestana === 'clip' && <PanelGiro clip={selected ?? null} cabezal={currentTime} />}
 
           {pestana === 'color' && (
             <section className="panel">
