@@ -59,34 +59,37 @@ export interface Mapeo {
  * Traduce la orientacion que declara la camara a un mapeo de ejes.
  *
  * Tanto GoPro (la clave ORIN) como Sony (el tag 0xe43a) escriben una cadena de
- * tres letras que dice, para cada canal guardado, a que eje de la camara
- * corresponde. La mayuscula es el eje positivo y la minuscula el negativo: por
- * ejemplo "ZXY" quiere decir que el primer canal es el eje Z, el segundo el X y
- * el tercero el Y; "Zxy" seria lo mismo con los dos ultimos invertidos.
+ * tres letras. Se lee de una sola forma, y es facil leerla al reves: cada letra
+ * dice, PARA EL EJE DE SALIDA DE ESA POSICION, de que canal guardado sale. O
+ * sea que en "ZXY" el eje X toma el canal z, el eje Y toma el canal x y el eje
+ * Z toma el canal y.
  *
- * Esto es exactamente lo que antes habia que adivinar. Con la cadena del propio
- * archivo, el mapeo deja de ser una suposicion que solo se confirma probando.
+ * La lectura opuesta -"el canal 0 va al eje Z"- es la permutacion inversa, y da
+ * un resultado que parece razonable pero cruza los tres ejes: en pantalla se ve
+ * como una imagen que se inclina un poco y no se estabiliza nada.
+ *
+ * La minuscula invierte el signo del canal.
  */
 export function mapeoDesdeOrientacion(declarada: string): Mapeo | null {
   const limpia = declarada.trim();
   if (limpia.length !== 3) return null;
 
-  const canales = ['x', 'y', 'z'] as const;
-  const destino = new Map<string, { de: 'x' | 'y' | 'z'; signo: 1 | -1 }>();
-
-  for (let i = 0; i < 3; i++) {
-    const letra = limpia[i]!;
+  const leer = (letra: string | undefined) => {
+    if (!letra) return null;
     const eje = letra.toLowerCase();
     if (eje !== 'x' && eje !== 'y' && eje !== 'z') return null;
-    // La minuscula marca el eje invertido.
-    destino.set(eje, { de: canales[i]!, signo: letra === eje ? -1 : 1 });
-  }
+    // La minuscula es el eje negativo; la mayuscula, el positivo.
+    return { de: eje as 'x' | 'y' | 'z', signo: (letra === eje ? -1 : 1) as 1 | -1 };
+  };
 
-  const pitch = destino.get('x');
-  const yaw = destino.get('y');
-  const roll = destino.get('z');
-  // Si algun eje se repite, falta otro y el mapeo no sirve.
+  const pitch = leer(limpia[0]);
+  const yaw = leer(limpia[1]);
+  const roll = leer(limpia[2]);
   if (!pitch || !yaw || !roll) return null;
+  // Los tres tienen que salir de canales distintos: si uno se repite, otro
+  // quedo sin usar y el mapeo no describe una rotacion.
+  if (new Set([pitch.de, yaw.de, roll.de]).size !== 3) return null;
+
   return { pitch, yaw, roll };
 }
 

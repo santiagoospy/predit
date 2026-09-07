@@ -82,6 +82,15 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    * corrige solo hasta donde entra.
    */
   const [recorteMax, setRecorteMax] = useState(15);
+  /**
+   * El codigo de ejes escrito a mano, para cuando el declarado no alcanza.
+   *
+   * Es lo unico de todo el pipeline que los datos no terminan de fijar: la
+   * camara dice como estan montados sus ejes, pero no en que convencion, y una
+   * convencion equivocada se ve como "se inclina y no estabiliza". Tres letras
+   * cubren las 48 combinaciones posibles y se resuelve mirando la pantalla.
+   */
+  const [ejesAMano, setEjesAMano] = useState('');
 
   const leer = async () => {
     if (!clip) return;
@@ -130,11 +139,11 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
   const estabilizacion = useMemo<Estabilizacion | null>(() => {
     if (!activo || !datos || !clip || !focalPx) return null;
 
-    // Los ejes salen del archivo cuando la camara los declara; si no, del mapeo
-    // tipico de esa marca, que ya es una suposicion.
+    // Lo escrito a mano manda; si no, lo que declaro la camara; y si tampoco,
+    // el mapeo tipico de esa marca, que ya es una suposicion.
+    const codigo = ejesAMano.trim() || datos.orientacionEjes || '';
     const mapeo =
-      (datos.orientacionEjes ? mapeoDesdeOrientacion(datos.orientacionEjes) : null) ??
-      (datos.fuente === 'sony' ? MAPEO_SONY : MAPEO_GOPRO);
+      mapeoDesdeOrientacion(codigo) ?? (datos.fuente === 'sony' ? MAPEO_SONY : MAPEO_GOPRO);
 
     // Solo el tramo que quedo despues de recortar: un golpe en un pedazo que
     // el usuario ya descarto no tiene por que costarle encuadre al resto.
@@ -154,7 +163,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       mapeo,
       zoomMaximo: 1 + recorteMax / 100,
     });
-  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax]);
+  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano]);
 
   // El visor no guarda estado del giroscopio: recibe la correccion ya armada.
   useEffect(() => {
@@ -240,6 +249,22 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 onChange={setRecorteMax}
                 texto={`${recorteMax}%`}
               />
+              <div className="fila nombrar">
+                <span className="comentario">ejes</span>
+                <input
+                  type="text"
+                  maxLength={3}
+                  spellCheck={false}
+                  value={ejesAMano}
+                  placeholder={datos.orientacionEjes ?? 'XYZ'}
+                  onChange={(e) => setEjesAMano(e.target.value)}
+                />
+              </div>
+              <small>
+                Si en vez de estabilizar inclina la imagen, intercambiá dos letras. Si un eje
+                corrige al revés, poné esa letra en minúscula. Tres letras distintas de X, Y y Z.
+              </small>
+
               <p className="nota">
                 /* recorte {recorte}% · corrige hasta{' '}
                 {estabilizacion.correccionMaxGrados.toFixed(1)}° · focal {origenFocal} */

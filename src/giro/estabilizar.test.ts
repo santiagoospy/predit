@@ -307,12 +307,20 @@ describe('mapeoDesdeOrientacion', () => {
     expect(mapeoDesdeOrientacion('XYz')?.roll).toEqual({ de: 'z', signo: -1 });
   });
 
-  it('reordena los canales cuando la camara los guarda en otro orden', () => {
-    // "ZXY": el primer canal es el eje Z, el segundo el X, el tercero el Y.
+  it('cada letra dice de que canal sale el eje de ESA posicion', () => {
+    // "ZXY", que es lo que declara GoPro: el eje X sale del canal z, el eje Y
+    // del canal x y el eje Z del canal y. Leerlo al reves da la permutacion
+    // inversa, que cruza los tres ejes.
     const mapeo = mapeoDesdeOrientacion('ZXY')!;
-    expect(mapeo.roll).toEqual({ de: 'x', signo: 1 });
-    expect(mapeo.pitch).toEqual({ de: 'y', signo: 1 });
-    expect(mapeo.yaw).toEqual({ de: 'z', signo: 1 });
+    expect(mapeo.pitch).toEqual({ de: 'z', signo: 1 });
+    expect(mapeo.yaw).toEqual({ de: 'x', signo: 1 });
+    expect(mapeo.roll).toEqual({ de: 'y', signo: 1 });
+  });
+
+  it('no es lo mismo leerla al reves', () => {
+    // La garantia de que no se vuelva a colar la lectura invertida: una cadena
+    // ciclica y su inversa tienen que dar mapeos distintos.
+    expect(mapeoDesdeOrientacion('ZXY')).not.toEqual(mapeoDesdeOrientacion('YZX'));
   });
 
   it('el mapeo leido produce la misma rotacion que armarlo a mano', () => {
