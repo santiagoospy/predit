@@ -156,3 +156,78 @@ describe('leerGoPro', () => {
     expect(leerGoPro([{ bytes: new Uint8Array(devc).buffer, segundo: 0 }])).toEqual([]);
   });
 });
+
+describe('optica de Sony', () => {
+  /** Una muestra con los tags de la camara, y opcionalmente el del lente. */
+  function conOptica({ focalNm }: { focalNm: number | null }): ArrayBuffer {
+    const cuerpo: number[] = [];
+    const u16 = (v: number) => cuerpo.push((v >> 8) & 0xff, v & 0xff);
+    const i32 = (v: number) =>
+      cuerpo.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+
+    // Tamano del pixel: 3800 nm de ancho.
+    u16(0xe407);
+    u16(4);
+    u16(3800);
+    u16(3800);
+    // Recorte del sensor: 6192 pixeles de ancho (unidad 1).
+    u16(0xe408);
+    u16(4);
+    i32(1);
+    u16(0xe40a);
+    u16(8);
+    i32(6192);
+    i32(3484);
+    if (focalNm !== null) {
+      u16(0xe410);
+      u16(12);
+      i32(0);
+      i32(0);
+      i32(focalNm);
+    }
+    // Un dato de giroscopio para que la muestra cuente.
+    u16(0xe439);
+    u16(4);
+    cuerpo.push(0x42, 0xc8, 0x00, 0x00); // escala 100.0
+    u16(0xe43b);
+    u16(14);
+    i32(1);
+    i32(6);
+    u16(100);
+    u16(0);
+    u16(0);
+
+    const bytes = new Uint8Array(0x1c + cuerpo.length);
+    bytes[1] = 0x1c;
+    bytes.set(cuerpo, 0x1c);
+    return bytes.buffer;
+  }
+
+  it('calcula el ancho del sensor con lo que escribe la camara', () => {
+    const { optica } = leerSony([{ bytes: conOptica({ focalNm: 35e6 }), segundo: 0 }], 3840);
+    // 3800 nm por pixel x 6192 pixeles = 23.5 mm: un Super35 / aps-c.
+    expect(optica?.sensorAnchoMm).toBeCloseTo(23.5, 1);
+  });
+
+  it('convierte los mm del lente a pixeles de la imagen', () => {
+    const { optica } = leerSony([{ bytes: conOptica({ focalNm: 35e6 }), segundo: 0 }], 3840);
+    expect(optica?.focalMm).toBeCloseTo(35, 3);
+    // 35mm sobre el ancho exacto del sensor (3800nm x 6192px), por 3840
+    // pixeles de imagen. Se calcula del valor leido y no de uno redondeado:
+    // la cuenta tiene que cerrar exacta.
+    const sensor = (3800 * 6192) / 1e6;
+    expect(optica?.focalPx).toBeCloseTo((35 / sensor) * 3840, 4);
+  });
+
+  it('con un lente manual da el sensor pero no la focal', () => {
+    const { optica } = leerSony([{ bytes: conOptica({ focalNm: null }), segundo: 0 }], 3840);
+    expect(optica?.sensorAnchoMm).toBeCloseTo(23.5, 1);
+    expect(optica?.focalMm).toBeNull();
+    expect(optica?.focalPx).toBeNull();
+  });
+
+  it('sin el ancho del video no calcula nada', () => {
+    const { optica } = leerSony([{ bytes: conOptica({ focalNm: 35e6 }), segundo: 0 }]);
+    expect(optica).toBeNull();
+  });
+});

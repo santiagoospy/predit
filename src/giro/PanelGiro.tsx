@@ -12,7 +12,7 @@ import { useState } from 'react';
 import type { TimelineClip } from '../edit/types';
 import { Curvas } from './Curvas';
 import { hayGiro, leerGiroscopio } from './leer';
-import type { DatosGiro, SinGiro } from './tipos';
+import { focalPxDesdeMm, type DatosGiro, type SinGiro } from './tipos';
 
 interface Props {
   clip: TimelineClip | null;
@@ -26,6 +26,14 @@ export function PanelGiro({ clip, cabezal }: Props) {
   const [tardo, setTardo] = useState(0);
   /** De que clip son los datos que hay en pantalla. */
   const [deQuien, setDeQuien] = useState<string | null>(null);
+  /**
+   * Los milimetros que puso el usuario a mano.
+   *
+   * Hace falta con un lente manual: sin contactos electricos, la camara no
+   * sabe que lente tiene puesto y no escribe la focal. El ancho del sensor si
+   * lo escribe, asi que con el numero del barril del lente alcanza.
+   */
+  const [mmAMano, setMmAMano] = useState('');
 
   const leer = async () => {
     if (!clip) return;
@@ -39,6 +47,16 @@ export function PanelGiro({ clip, cabezal }: Props) {
   };
 
   const vigente = deQuien === clip?.id ? resultado : null;
+  const optica = vigente && hayGiro(vigente) ? vigente.optica : null;
+  /**
+   * La focal que se va a usar: la que declaro el lente, o la que puso el
+   * usuario. Lo escrito a mano gana, para poder corregir un lente adaptado que
+   * declara los milimetros del adaptador y no los suyos.
+   */
+  const focalPx =
+    (mmAMano && optica?.sensorAnchoMm
+      ? focalPxDesdeMm(Number(mmAMano), optica.sensorAnchoMm, optica.anchoPx)
+      : null) ?? optica?.focalPx ?? null;
 
   return (
     <section className="panel">
@@ -88,11 +106,20 @@ export function PanelGiro({ clip, cabezal }: Props) {
             </li>
             <li className="hay">
               <span className="marca">·</span>
-              <span className="nombre">óptica</span>
+              <span className="nombre">sensor leído</span>
               <span className="detalle">
-                {vigente.optica
-                  ? `${vigente.optica.focalMm.toFixed(0)}mm · f=${vigente.optica.focalPx.toFixed(0)}px`
-                  : 'no la escribió'}
+                {vigente.optica?.sensorAnchoMm
+                  ? `${vigente.optica.sensorAnchoMm.toFixed(1)} mm de ancho`
+                  : 'no lo escribió'}
+              </span>
+            </li>
+            <li className="hay">
+              <span className="marca">{focalPx ? '✓' : '·'}</span>
+              <span className="nombre">focal</span>
+              <span className="detalle">
+                {focalPx
+                  ? `${(vigente.optica?.focalMm ?? Number(mmAMano)).toFixed(0)}mm · f=${focalPx.toFixed(0)}px`
+                  : 'falta'}
               </span>
             </li>
             <li className="hay">
@@ -102,12 +129,32 @@ export function PanelGiro({ clip, cabezal }: Props) {
             </li>
           </ul>
 
+          {vigente.optica?.sensorAnchoMm && (
+            <div className="fila nombrar">
+              <span className="comentario">
+                {vigente.optica.focalMm === null ? 'lente manual · mm' : 'forzar mm'}
+              </span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={1}
+                max={2000}
+                step={1}
+                value={mmAMano}
+                placeholder={vigente.optica.focalMm?.toFixed(0) ?? '35'}
+                onChange={(e) => setMmAMano(e.target.value)}
+              />
+            </div>
+          )}
+
           <Curvas muestras={vigente.muestras} cabezal={cabezal} />
 
           <small>
             Rojo, verde y azul son los tres ejes. Con la cámara quieta tienen que ser tres líneas
             planas; un paneo tiene que levantar un eje solo. El pico en °/s de arriba a la izquierda
             dice si las unidades están bien: a mano difícilmente pase de 200.
+            {vigente.optica?.focalMm === null &&
+              ' Con un lente manual la cámara no sabe la focal: poné los mm que dice el barril.'}
           </small>
         </>
       )}

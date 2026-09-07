@@ -19,7 +19,7 @@ import {
   type Mapeo,
 } from './estabilizar';
 import { angulo, IDENTIDAD, multiplicar, inverso, slerp, desdeVelocidad, aMatriz } from './quat';
-import type { MuestraGiro } from './tipos';
+import { focalPxDesdeMm, type MuestraGiro } from './tipos';
 
 /** Un mapeo neutro, para que los tests hablen de ejes y no de fabricantes. */
 const DIRECTO: Mapeo = {
@@ -267,5 +267,26 @@ describe('quat', () => {
     const ry = m[3]! * x + m[4]! * y + m[5]! * z;
     const rz = m[6]! * x + m[7]! * y + m[8]! * z;
     expect(Math.hypot(rx, ry, rz)).toBeCloseTo(Math.hypot(x, y, z), 6);
+  });
+});
+
+describe('focalPxDesdeMm', () => {
+  it('el mismo lente en un sensor mas chico da mas focal en pixeles', () => {
+    // Un 35mm cubre menos campo en aps-c que en full frame, asi que su focal
+    // medida en pixeles de la imagen es mayor.
+    const apsc = focalPxDesdeMm(35, 23.5, 3840)!;
+    const fullFrame = focalPxDesdeMm(35, 36, 3840)!;
+    expect(apsc).toBeGreaterThan(fullFrame);
+    expect(apsc / fullFrame).toBeCloseTo(36 / 23.5, 3);
+  });
+
+  it('el doble de focal es el doble de pixeles', () => {
+    expect(focalPxDesdeMm(100, 36, 1920)!).toBeCloseTo(2 * focalPxDesdeMm(50, 36, 1920)!, 6);
+  });
+
+  it('rechaza numeros que no sirven en vez de devolver infinito', () => {
+    expect(focalPxDesdeMm(0, 36, 1920)).toBeNull();
+    expect(focalPxDesdeMm(35, 0, 1920)).toBeNull();
+    expect(focalPxDesdeMm(35, 36, 0)).toBeNull();
   });
 });

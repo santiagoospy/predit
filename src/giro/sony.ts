@@ -15,7 +15,7 @@
  * contra camaras de verdad.
  */
 
-import type { MuestraGiro, Optica } from './tipos';
+import { focalPxDesdeMm, type MuestraGiro, type Optica } from './tipos';
 
 /** Los tags que interesan. El resto de la muestra se saltea. */
 const TAG_FRECUENCIA = 0xe435;
@@ -88,26 +88,33 @@ function crudoVacio(): Crudo {
 }
 
 /**
- * La focal en pixeles de la imagen final.
+ * Lo que se puede saber de la optica con lo que escribio la camara.
  *
- * Devuelve null en cuanto falte cualquiera de las piezas: una focal inventada
- * corrige de mas o de menos, y es preferible que el usuario la ajuste a ojo
- * antes que darle un numero que parece bueno y no lo es.
+ * El ancho del sensor sale siempre, porque el tamano del pixel y el recorte los
+ * escribe la camara. La focal solo si el lente la declaro: con un lente manual
+ * queda en null y el usuario la carga a mano.
  */
 function optica(c: Crudo, anchoDelVideo: number): Optica | null {
-  if (!c.focalNm || !c.pixelAncho || !c.recorteAncho) return null;
-  // Los dos vienen en nanometros por defecto; si la camara declara otra unidad
-  // se convierte, porque el cociente tiene que ser adimensional.
-  const pixelNm = (c.pixelAncho * 1e9) / (c.pixelUnidad ?? 1e9);
-  if (pixelNm <= 0) return null;
-  const recortePx = c.recorteAncho / (c.recorteUnidad ?? 1);
-  if (recortePx <= 0) return null;
+  if (anchoDelVideo <= 0) return null;
 
-  const focalEnPixelesDelSensor = c.focalNm / pixelNm;
-  return {
-    focalPx: focalEnPixelesDelSensor * (anchoDelVideo / recortePx),
-    focalMm: c.focalNm / 1e6,
-  };
+  let sensorAnchoMm: number | null = null;
+  if (c.pixelAncho && c.recorteAncho) {
+    // El tamano del pixel viene en nanometros salvo que la camara diga otra
+    // unidad; el recorte, en pixeles del sensor. Multiplicados dan el ancho
+    // fisico que se esta leyendo.
+    const pixelNm = (c.pixelAncho * 1e9) / (c.pixelUnidad ?? 1e9);
+    const recortePx = c.recorteAncho / (c.recorteUnidad ?? 1);
+    if (pixelNm > 0 && recortePx > 0) sensorAnchoMm = (pixelNm * recortePx) / 1e6;
+  }
+
+  const focalMm = c.focalNm ? c.focalNm / 1e6 : null;
+  const focalPx =
+    focalMm !== null && sensorAnchoMm !== null
+      ? focalPxDesdeMm(focalMm, sensorAnchoMm, anchoDelVideo)
+      : null;
+
+  if (sensorAnchoMm === null && focalMm === null) return null;
+  return { focalPx, focalMm, sensorAnchoMm, anchoPx: anchoDelVideo };
 }
 
 function esRtmd(vista: DataView): boolean {
