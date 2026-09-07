@@ -224,6 +224,15 @@ export interface Opciones {
   ancho: number;
   alto: number;
   mapeo: Mapeo;
+  /**
+   * Cuanto se acepta agrandar la imagen, como maximo. 1.3 es 30% de recorte.
+   *
+   * Sin tope, el recorte lo decide el peor instante de todo el clip: un golpe
+   * de un cuarto de segundo -apoyar la camara, un tropezon- le impone su zoom a
+   * los dos minutos enteros. Con tope, ese instante se corrige solo hasta donde
+   * entra y el resto del clip conserva su encuadre.
+   */
+  zoomMaximo: number;
 }
 
 /** La estabilizacion ya resuelta, lista para que la consulte el renderer. */
@@ -242,8 +251,15 @@ export interface Estabilizacion {
    * chico y para el export a tamano completo.
    */
   matrizUvEn: (segundo: number) => number[];
-  /** Cuanto hay que agrandar la imagen para que no entren bordes negros. */
+  /** Cuanto se agranda la imagen, ya con el tope aplicado. */
   zoom: number;
+  /**
+   * Cuanto haria falta agrandar para corregir TODO sin bordes negros.
+   *
+   * Si es mayor que `zoom`, los momentos mas violentos se estan corrigiendo a
+   * medias. Se muestra para que la decision sea del usuario y no una sorpresa.
+   */
+  zoomIdeal: number;
   /** El angulo maximo que llega a corregir, en grados. Es el diagnostico. */
   correccionMaxGrados: number;
 }
@@ -251,13 +267,13 @@ export interface Estabilizacion {
 /**
  * Arma la matriz de muestreo para una correccion dada.
  *
- * Es K · R⁻¹ · K⁻¹ con K la matriz de la camara: se lleva el pixel de salida al
- * rayo que le corresponde, se lo rota hacia donde estaba la camara de verdad, y
- * se lo vuelve a proyectar a pixel. El zoom entra achicando la focal del lado
+ * Es K · R · K⁻¹ con K la matriz de la camara: se lleva el pixel de salida al
+ * rayo que le corresponde, se lo rota hacia donde apuntaba la camara de verdad,
+ * y se lo vuelve a proyectar a pixel. El zoom entra achicando la focal del lado
  * de la salida, que es lo mismo que acercar la camara virtual.
  */
 function matrizDeMuestreo(q: Quat, o: Opciones, zoom: number): number[] {
-  const r = aMatriz(inverso(q));
+  const r = aMatriz(q);
   const cx = o.ancho / 2;
   const cy = o.alto / 2;
   const fEntrada = o.focalPx;
@@ -302,24 +318,43 @@ function aplicar(m: number[], x: number, y: number): [number, number] {
  * Se mira una muestra de cuadros y no todos: el zoom lo decide el peor momento
  * del clip, y ese momento dura mucho mas que un cuadro.
  */
-function zoomNecesario(correcciones: Quat[], o: Opciones): number {
-  const esquinas: [number, number][] = [
+function esquinasDentro(q: Quat, o: Opciones, zoom: number): boolean {
+  const m = matrizDeMuestreo(q, o, zoom);
+  for (const [ex, ey] of [
     [0, 0],
     [o.ancho, 0],
     [0, o.alto],
     [o.ancho, o.alto],
-  ];
+  ] as const) {
+    const [px, py] = aplicar(m, ex, ey);
+    if (px < 0 || py < 0 || px > o.ancho || py > o.alto) return false;
+  }
+  return true;
+}
 
-  const alcanza = (zoom: number): boolean => {
-    for (const q of correcciones) {
-      const m = matrizDeMuestreo(q, o, zoom);
-      for (const [ex, ey] of esquinas) {
-        const [px, py] = aplicar(m, ex, ey);
-        if (px < 0 || py < 0 || px > o.ancho || py > o.alto) return false;
-      }
-    }
-    return true;
-  };
+/**
+ * Recorta la correccion de un cuadro hasta donde entre con el zoom disponible.
+ *
+ * Se interpola desde "no corregir nada" hacia la correccion completa y se busca
+ * el punto justo antes de que asome un borde negro. Asi un golpe puntual se
+ * corrige a medias -que ya es mejor que nada- en vez de obligar a recortar el
+ * clip entero.
+ */
+function acotar(q: Quat, o: Opciones, zoom: number): Quat {
+  if (esquinasDentro(q, o, zoom)) return q;
+  let bajo = 0;
+  let alto = 1;
+  for (let i = 0; i < 16; i++) {
+    const medio = (bajo + alto) / 2;
+    if (esquinasDentro(slerp(IDENTIDAD, q, medio), o, zoom)) bajo = medio;
+    else alto = medio;
+  }
+  return slerp(IDENTIDAD, q, bajo);
+}
+
+function zoomNecesario(correcciones: Quat[], o: Opciones): number {
+  const alcanza = (zoom: number): boolean =>
+    correcciones.every((q) => esquinasDentro(q, o, zoom));
 
   if (alcanza(1)) return 1;
   let bajo = 1;
@@ -369,23 +404,38 @@ export function prepararEstabilizacion(
 
   const correccionEn = (segundo: number): Quat => {
     const t = segundo + o.desfase;
-    // La suave por la inversa de la real: cuanto hay que rotar la imagen para
-    // que la camara real se vea como la virtual.
-    return normalizar(multiplicar(orientacionEn(suaves, t), inverso(orientacionEn(reales, t))));
+    /*
+     * La rotacion con la que hay que MUESTREAR, que no es la misma que la
+     * correccion "conceptual" y el orden importa.
+     *
+     * La camara real ve un rayo del mundo d como inv(R_real)*d. Un pixel de la
+     * salida vive en la camara virtual, asi que su rayo es v = inv(R_suave)*d;
+     * despejando d y metiendolo en la primera, el rayo que le corresponde en la
+     * imagen real es inv(R_real)*R_suave*v.
+     *
+     * Invertir este producto -o darlo vuelta- no corrige menos: corrige para el
+     * otro lado, y la imagen tiembla el doble en vez de la mitad.
+     */
+    return normalizar(multiplicar(inverso(orientacionEn(reales, t)), orientacionEn(suaves, t)));
   };
 
   const deLosCuadros = cuadros.map(correccionEn);
-  const zoom = zoomNecesario(deLosCuadros, o);
+  const zoomIdeal = zoomNecesario(deLosCuadros, o);
+  const zoom = Math.min(zoomIdeal, Math.max(1, o.zoomMaximo));
 
   let maximo = 0;
   for (const q of deLosCuadros) {
     maximo = Math.max(maximo, 2 * Math.acos(Math.min(1, Math.abs(q[0]))));
   }
 
+  const matriz = (segundo: number) =>
+    matrizDeMuestreo(acotar(correccionEn(segundo), o, zoom), o, zoom);
+
   return {
-    matrizEn: (segundo) => matrizDeMuestreo(correccionEn(segundo), o, zoom),
-    matrizUvEn: (segundo) => aEspacioUv(matrizDeMuestreo(correccionEn(segundo), o, zoom), o),
+    matrizEn: matriz,
+    matrizUvEn: (segundo) => aEspacioUv(matriz(segundo), o),
     zoom,
+    zoomIdeal,
     correccionMaxGrados: (maximo * 180) / Math.PI,
   };
 }

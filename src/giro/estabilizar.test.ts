@@ -161,6 +161,7 @@ describe('prepararEstabilizacion', () => {
     ancho: 1920,
     alto: 1080,
     mapeo: DIRECTO,
+    zoomMaximo: 4,
   };
   const cuadros = Array.from({ length: 25 }, (_, i) => i / 25);
 
@@ -339,6 +340,7 @@ describe('matrizUvEn', () => {
     ancho: 1920,
     alto: 1080,
     mapeo: DIRECTO,
+    zoomMaximo: 4,
   };
   const cuadros = Array.from({ length: 10 }, (_, i) => i / 10);
 
@@ -400,5 +402,108 @@ describe('matrizUvEn', () => {
         expect(vy).toBeLessThanOrEqual(1 + 1e-4);
       }
     }
+  });
+});
+
+/**
+ * El test que le faltaba a todo esto: que la correccion vaya para el LADO
+ * correcto.
+ *
+ * Los tests anteriores comprobaban que la matriz fuera coherente consigo misma
+ * -que las esquinas entraran, que el uv coincidiera con los pixeles- y eso se
+ * cumple igual con la correccion invertida. El sintoma en pantalla era que el
+ * clip temblaba el DOBLE, y ningun test lo veia.
+ *
+ * La idea aca es mirar el mundo: se fija un punto lejano, se mira en que
+ * direccion lo ve el pixel del centro cuadro a cuadro, y se mide cuanto se
+ * mueve esa direccion. Estabilizar tiene que ACHICAR ese movimiento.
+ */
+describe('la correccion va en la direccion correcta', () => {
+  const opciones = {
+    suavidad: 1,
+    desfase: 0,
+    focalPx: 1400,
+    ancho: 1920,
+    alto: 1080,
+    mapeo: DIRECTO,
+    zoomMaximo: 4,
+  };
+
+  /** Un temblor de mano: rapido, chico y sin ir a ningun lado. */
+  const temblor = (): MuestraGiro[] => {
+    const muestras: MuestraGiro[] = [];
+    for (let i = 0; i <= 600; i++) {
+      const t = i / 300;
+      muestras.push({
+        segundo: t,
+        x: 20 * Math.sin(t * 34),
+        y: 16 * Math.sin(t * 27 + 1),
+        z: 0,
+      });
+    }
+    return muestras;
+  };
+
+  /**
+   * Hacia donde mira, en el mundo, el pixel del centro de la salida.
+   *
+   * Se toma el rayo del centro, se lo pasa por la matriz de muestreo para saber
+   * que pixel de la imagen real ocupa, y se lo devuelve al mundo con la
+   * orientacion real de la camara en ese instante.
+   */
+  const dondeMiraElCentro = (m: number[], qReal: Parameters<typeof aMatriz>[0]) => {
+    const cx = opciones.ancho / 2;
+    const cy = opciones.alto / 2;
+    const w = m[6]! * cx + m[7]! * cy + m[8]!;
+    const px = (m[0]! * cx + m[1]! * cy + m[2]!) / w;
+    const py = (m[3]! * cx + m[4]! * cy + m[5]!) / w;
+
+    // De pixel a rayo en la camara, y de ahi al mundo.
+    const v = [(px - cx) / opciones.focalPx, (py - cy) / opciones.focalPx, 1];
+    const r = aMatriz(qReal);
+    const d = [
+      r[0]! * v[0]! + r[1]! * v[1]! + r[2]! * v[2]!,
+      r[3]! * v[0]! + r[4]! * v[1]! + r[5]! * v[2]!,
+      r[6]! * v[0]! + r[7]! * v[1]! + r[8]! * v[2]!,
+    ];
+    const n = Math.hypot(d[0]!, d[1]!, d[2]!);
+    return [d[0]! / n, d[1]! / n, d[2]! / n] as const;
+  };
+
+  /** Cuanto se abre el abanico de direcciones, en grados. */
+  const dispersion = (direcciones: (readonly [number, number, number])[]) => {
+    let peor = 0;
+    for (const a of direcciones) {
+      for (const b of direcciones) {
+        const coseno = Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+        peor = Math.max(peor, (Math.acos(coseno) * 180) / Math.PI);
+      }
+    }
+    return peor;
+  };
+
+  it('estabilizar achica el movimiento, no lo agranda', () => {
+    const muestras = temblor();
+    const cuadros = Array.from({ length: 40 }, (_, i) => 0.4 + (i / 40) * 1.2);
+    const e = prepararEstabilizacion(muestras, cuadros, opciones);
+    const reales = integrar(muestras, DIRECTO);
+
+    const identidad = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const sinEstabilizar = cuadros.map((t) =>
+      dondeMiraElCentro(identidad, orientacionEn(reales, t)),
+    );
+    const estabilizado = cuadros.map((t) =>
+      dondeMiraElCentro(e.matrizEn(t), orientacionEn(reales, t)),
+    );
+
+    const antes = dispersion(sinEstabilizar);
+    const despues = dispersion(estabilizado);
+
+    // Que se mueva de verdad, si no el test no prueba nada.
+    expect(antes).toBeGreaterThan(1);
+    // Y que estabilizar lo reduzca de forma clara. Con la correccion invertida
+    // este numero sale del orden del DOBLE de `antes`, que es justo el sintoma
+    // que se veia en pantalla.
+    expect(despues).toBeLessThan(antes * 0.5);
   });
 });

@@ -74,6 +74,14 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    * es preferible una perilla honesta que un valor inventado.
    */
   const [fovAMano, setFovAMano] = useState(FOV_POR_DEFECTO);
+  /**
+   * Cuanto encuadre se acepta perder, como maximo.
+   *
+   * Sin tope el recorte lo decide el peor instante del clip: apoyar la camara
+   * al final le impone su zoom a todo lo anterior. Con tope, ese instante se
+   * corrige solo hasta donde entra.
+   */
+  const [recorteMax, setRecorteMax] = useState(15);
 
   const leer = async () => {
     if (!clip) return;
@@ -128,10 +136,13 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       (datos.orientacionEjes ? mapeoDesdeOrientacion(datos.orientacionEjes) : null) ??
       (datos.fuente === 'sony' ? MAPEO_SONY : MAPEO_GOPRO);
 
-    const duracion = clip.info.durationSeconds || 1;
+    // Solo el tramo que quedo despues de recortar: un golpe en un pedazo que
+    // el usuario ya descarto no tiene por que costarle encuadre al resto.
+    const desde = clip.trimIn;
+    const hasta = clip.trimOut > clip.trimIn ? clip.trimOut : clip.info.durationSeconds || 1;
     const cuadros = Array.from(
       { length: MUESTRAS_DE_RECORTE },
-      (_, i) => (i / (MUESTRAS_DE_RECORTE - 1)) * duracion,
+      (_, i) => desde + ((hasta - desde) * i) / (MUESTRAS_DE_RECORTE - 1),
     );
 
     return prepararEstabilizacion(datos.muestras, cuadros, {
@@ -141,8 +152,9 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       ancho: clip.info.displayWidth,
       alto: clip.info.displayHeight,
       mapeo,
+      zoomMaximo: 1 + recorteMax / 100,
     });
-  }, [activo, datos, clip, focalPx, suavidad, desfaseMs]);
+  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax]);
 
   // El visor no guarda estado del giroscopio: recibe la correccion ya armada.
   useEffect(() => {
@@ -154,6 +166,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
   useEffect(() => () => onEstabilizacion(null), [onEstabilizacion]);
 
   const recorte = estabilizacion ? ((estabilizacion.zoom - 1) * 100).toFixed(0) : '0';
+  const ideal = estabilizacion ? ((estabilizacion.zoomIdeal - 1) * 100).toFixed(0) : '0';
 
   return (
     <section className="panel">
@@ -218,10 +231,25 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                   texto={`${fovAMano}°`}
                 />
               )}
+              <Deslizador
+                etiqueta="recorte máximo"
+                valor={recorteMax}
+                min={0}
+                max={50}
+                paso={1}
+                onChange={setRecorteMax}
+                texto={`${recorteMax}%`}
+              />
               <p className="nota">
                 /* recorte {recorte}% · corrige hasta{' '}
                 {estabilizacion.correccionMaxGrados.toFixed(1)}° · focal {origenFocal} */
               </p>
+              {estabilizacion.zoomIdeal > estabilizacion.zoom + 0.005 && (
+                <p className="aviso">
+                  Para corregir todo harían falta {ideal}% de recorte. Los momentos más bruscos se
+                  corrigen a medias para no comerse el encuadre del resto del clip.
+                </p>
+              )}
             </>
           )}
 
