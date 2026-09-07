@@ -372,3 +372,42 @@ describe('diagnostico de claves de GoPro', () => {
     return new Uint8Array(devc).buffer;
   }
 });
+
+describe('unidades del giroscopio de GoPro', () => {
+  /** Una muestra con la unidad declarada al lado del GYRO. */
+  function conUnidad(unidad: string | null, clave = 'SIUN'): ArrayBuffer {
+    const gyro = nodo('GYRO', 's', 6, 1, [0, 100, 0, 0, 0, 0]);
+    const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
+    const siun = unidad
+      ? nodo(clave, 'c', 1, unidad.length, [...unidad].map((c) => c.charCodeAt(0)))
+      : [];
+    const strm = nodo('STRM', '\0', 1, siun.length + scal.length + gyro.length, [
+      ...siun,
+      ...scal,
+      ...gyro,
+    ]);
+    const devc = nodo('DEVC', '\0', 1, strm.length, strm);
+    return new Uint8Array(devc).buffer;
+  }
+
+  it('pasa de radianes a grados cuando la camara lo declara', () => {
+    const { muestras } = leerGoPro([{ bytes: conUnidad('rad/s'), segundo: 0 }], 4000);
+    // 100 crudos / SCAL 10 = 10 rad/s, que son 573 grados por segundo.
+    expect(muestras[0]!.x).toBeCloseTo((10 * 180) / Math.PI, 3);
+  });
+
+  it('acepta la unidad tambien en UNIT', () => {
+    const { muestras } = leerGoPro([{ bytes: conUnidad('rad/s', 'UNIT'), segundo: 0 }], 4000);
+    expect(muestras[0]!.x).toBeCloseTo((10 * 180) / Math.PI, 3);
+  });
+
+  it('no convierte si ya viene en grados', () => {
+    const { muestras } = leerGoPro([{ bytes: conUnidad('deg/s'), segundo: 0 }], 4000);
+    expect(muestras[0]!.x).toBeCloseTo(10, 5);
+  });
+
+  it('sin unidad declarada deja los valores como estan', () => {
+    const { muestras } = leerGoPro([{ bytes: conUnidad(null), segundo: 0 }], 4000);
+    expect(muestras[0]!.x).toBeCloseTo(10, 5);
+  });
+});

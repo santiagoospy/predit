@@ -214,6 +214,18 @@ function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number;
     const scal = partes.find((p) => p.clave === 'SCAL');
     const divisores = scal ? numeros(vista, scal) : [];
     const crudos = numeros(vista, gyro);
+
+    /**
+     * A grados por segundo, que es la unidad con la que trabaja todo lo demas.
+     *
+     * GoPro guarda el giroscopio en RADIANES por segundo y lo declara en SIUN
+     * (o en UNIT). Sin esta conversion los valores salen 57 veces mas chicos, y
+     * el sintoma no es un error sino algo peor: la estabilizacion funciona pero
+     * corrige tan poco que parece que no hiciera nada.
+     */
+    const unidad = partes.find((p) => p.clave === 'SIUN' || p.clave === 'UNIT');
+    const aGrados = unidad && texto(vista, unidad).startsWith('rad') ? 180 / Math.PI : 1;
+
     // El GYRO viene como ternas pegadas: x, y, z, x, y, z...
     for (let i = 0; i + 2 < crudos.length; i += 3) {
       const d = (eje: number) => {
@@ -221,9 +233,9 @@ function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number;
         return div === 0 ? 1 : div;
       };
       ternas.push({
-        x: crudos[i]! / d(0),
-        y: crudos[i + 1]! / d(1),
-        z: crudos[i + 2]! / d(2),
+        x: (crudos[i]! / d(0)) * aGrados,
+        y: (crudos[i + 1]! / d(1)) * aGrados,
+        z: (crudos[i + 2]! / d(2)) * aGrados,
       });
     }
   };
