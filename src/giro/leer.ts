@@ -84,9 +84,11 @@ export async function leerGiroscopio(
       muestras = leido.muestras;
       optica = leido.optica;
     } else {
-      // GoPro no escribe la optica en la pista: su lente es fijo y conocido,
-      // pero eso ya seria un perfil de lente y hoy no lo tenemos.
-      muestras = leerGoPro(crudas);
+      // GoPro guarda su propia calibracion de fabrica en el archivo, asi que de
+      // aca sale tanto la focal como el modelo del ojo de pez.
+      const leido = leerGoPro(crudas, anchoDelVideo);
+      muestras = leido.muestras;
+      optica = leido.optica;
     }
 
     if (muestras.length === 0) {

@@ -134,7 +134,7 @@ describe('leerSony', () => {
 
 describe('leerGoPro', () => {
   it('divide por el SCAL y reparte los tiempos en el tramo de la muestra', () => {
-    const muestras = leerGoPro([
+    const { muestras } = leerGoPro([
       { bytes: muestraGoPro([[100, 200, 300], [400, 500, 600]], 10), segundo: 0 },
       { bytes: muestraGoPro([[0, 0, 0]], 10), segundo: 1 },
     ]);
@@ -146,14 +146,14 @@ describe('leerGoPro', () => {
   });
 
   it('ignora bytes que no son GPMF en vez de romper', () => {
-    expect(leerGoPro([{ bytes: new Uint8Array([9, 9, 9, 9]).buffer, segundo: 0 }])).toEqual([]);
+    expect(leerGoPro([{ bytes: new Uint8Array([9, 9, 9, 9]).buffer, segundo: 0 }]).muestras).toEqual([]);
   });
 
   it('devuelve vacio si el stream no tiene GYRO', () => {
     const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
     const strm = nodo('STRM', '\0', 1, scal.length, scal);
     const devc = nodo('DEVC', '\0', 1, strm.length, strm);
-    expect(leerGoPro([{ bytes: new Uint8Array(devc).buffer, segundo: 0 }])).toEqual([]);
+    expect(leerGoPro([{ bytes: new Uint8Array(devc).buffer, segundo: 0 }]).muestras).toEqual([]);
   });
 });
 
@@ -229,5 +229,98 @@ describe('optica de Sony', () => {
   it('sin el ancho del video no calcula nada', () => {
     const { optica } = leerSony([{ bytes: conOptica({ focalNm: 35e6 }), segundo: 0 }]);
     expect(optica).toBeNull();
+  });
+});
+
+describe('calibracion del lente de GoPro', () => {
+  /** Codifica floats de 32 bits big-endian, que es como vienen en GPMF. */
+  function floats(valores: number[]): number[] {
+    const b = new DataView(new ArrayBuffer(valores.length * 4));
+    valores.forEach((v, i) => b.setFloat32(i * 4, v));
+    return [...new Uint8Array(b.buffer)];
+  }
+
+  /**
+   * Una muestra con la calibracion al lado del giroscopio.
+   *
+   * Los valores son del orden de los de una HERO: el coeficiente lineal cerca
+   * de 1 y un multiplicador que lleva el radio normalizado al rango del
+   * polinomio.
+   */
+  function conLente({
+    poly = [0, 1.1, 0, 0.12],
+    zmpl = 0.9,
+    vres = [4000, 3000],
+    zfov = 149.2,
+    modo = 'W',
+    aspectos = null as [number, number] | null,
+  } = {}): ArrayBuffer {
+    const partes = [
+      ...nodo('POLY', 'f', 4, poly.length, floats(poly)),
+      ...nodo('ZMPL', 'f', 4, 1, floats([zmpl])),
+      ...nodo('VRES', 'L', 4, 2, [
+        ...[(vres[0]! >>> 24) & 0xff, (vres[0]! >>> 16) & 0xff, (vres[0]! >>> 8) & 0xff, vres[0]! & 0xff],
+        ...[(vres[1]! >>> 24) & 0xff, (vres[1]! >>> 16) & 0xff, (vres[1]! >>> 8) & 0xff, vres[1]! & 0xff],
+      ]),
+      ...nodo('ZFOV', 'f', 4, 1, floats([zfov])),
+      ...nodo('VFOV', 'c', 1, modo.length, [...modo].map((c) => c.charCodeAt(0))),
+      ...(aspectos
+        ? [
+            ...nodo('ARWA', 'f', 4, 1, floats([aspectos[0]])),
+            ...nodo('ARUW', 'f', 4, 1, floats([aspectos[1]])),
+          ]
+        : []),
+    ];
+    const gyro = nodo('GYRO', 's', 6, 1, [0, 100, 0, 0, 0, 0]);
+    const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
+    const strm = nodo('STRM', '\0', 1, scal.length + gyro.length, [...scal, ...gyro]);
+    const devc = nodo('DEVC', '\0', 1, partes.length + strm.length, [...partes, ...strm]);
+    return new Uint8Array(devc).buffer;
+  }
+
+  it('calcula la focal con la formula de la calibracion', () => {
+    const { optica } = leerGoPro([{ bytes: conLente(), segundo: 0 }], 4000);
+    // f = mediaDiagonal / (r1 * zmpl * factor), escalada al ancho del video.
+    const mediaDiagonal = 0.5 * Math.hypot(4000, 3000);
+    expect(optica?.focalPx).toBeCloseTo(mediaDiagonal / (1.1 * 0.9), 3);
+  });
+
+  it('escala la focal cuando el video no esta a la resolucion de calibracion', () => {
+    const grande = leerGoPro([{ bytes: conLente(), segundo: 0 }], 4000).optica!;
+    const chico = leerGoPro([{ bytes: conLente(), segundo: 0 }], 2000).optica!;
+    expect(chico.focalPx).toBeCloseTo(grande.focalPx! / 2, 4);
+  });
+
+  it('guarda el polinomio y el angulo maximo para poder enderezar el horizonte', () => {
+    const { optica } = leerGoPro([{ bytes: conLente({ zfov: 149.2 }) }].map((m) => ({ ...m, segundo: 0 })), 4000);
+    expect(optica?.radial?.poly).toHaveLength(4);
+    expect(optica?.radial?.zmpl).toBeCloseTo(0.9, 5);
+    // La mitad de 149.2 grados, en radianes.
+    expect(optica?.radial?.anguloMaxRad).toBeCloseTo((74.6 * Math.PI) / 180, 5);
+    expect(optica?.radial?.modo).toBe('Wide');
+  });
+
+  it('tiene en cuenta el estirado de Superview', () => {
+    const wide = leerGoPro([{ bytes: conLente(), segundo: 0 }], 4000).optica!;
+    // Superview estira 16:9 desde un sensor 4:3: el factor achica la focal.
+    const superview = leerGoPro(
+      [{ bytes: conLente({ modo: 'S', aspectos: [1.7778, 1.3333] }), segundo: 0 }],
+      4000,
+    ).optica!;
+    expect(superview.focalPx).toBeLessThan(wide.focalPx!);
+    expect(superview.radial?.modo).toBe('Superview');
+  });
+
+  it('sin calibracion no inventa una optica', () => {
+    const gyro = nodo('GYRO', 's', 6, 1, [0, 100, 0, 0, 0, 0]);
+    const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
+    const strm = nodo('STRM', '\0', 1, scal.length + gyro.length, [...scal, ...gyro]);
+    const devc = nodo('DEVC', '\0', 1, strm.length, strm);
+    const { optica, muestras } = leerGoPro(
+      [{ bytes: new Uint8Array(devc).buffer, segundo: 0 }],
+      4000,
+    );
+    expect(optica).toBeNull();
+    expect(muestras).toHaveLength(1);
   });
 });

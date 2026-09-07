@@ -114,7 +114,10 @@ function optica(c: Crudo, anchoDelVideo: number): Optica | null {
       : null;
 
   if (sensorAnchoMm === null && focalMm === null) return null;
-  return { focalPx, focalMm, sensorAnchoMm, anchoPx: anchoDelVideo };
+  // Sony no calibra la deformacion del lente en la pista: sus lentes son
+  // rectilineos y las lineas rectas salen rectas, asi que no hay nada que
+  // corregir.
+  return { focalPx, focalMm, sensorAnchoMm, anchoPx: anchoDelVideo, radial: null };
 }
 
 function esRtmd(vista: DataView): boolean {

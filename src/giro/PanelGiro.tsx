@@ -106,20 +106,28 @@ export function PanelGiro({ clip, cabezal }: Props) {
             </li>
             <li className="hay">
               <span className="marca">·</span>
-              <span className="nombre">sensor leído</span>
+              <span className="nombre">{optica?.radial ? 'lente calibrado' : 'sensor leído'}</span>
               <span className="detalle">
-                {vigente.optica?.sensorAnchoMm
-                  ? `${vigente.optica.sensorAnchoMm.toFixed(1)} mm de ancho`
-                  : 'no lo escribió'}
+                {optica?.radial
+                  ? `${optica.radial.modo || 'sin modo'} · ${
+                      optica.radial.anguloMaxRad
+                        ? `${((optica.radial.anguloMaxRad * 360) / Math.PI).toFixed(0)}° diag`
+                        : 'sin campo'
+                    }`
+                  : optica?.sensorAnchoMm
+                    ? `${optica.sensorAnchoMm.toFixed(1)} mm de ancho`
+                    : 'no lo escribió'}
               </span>
             </li>
             <li className="hay">
               <span className="marca">{focalPx ? '✓' : '·'}</span>
               <span className="nombre">focal</span>
               <span className="detalle">
-                {focalPx
-                  ? `${(vigente.optica?.focalMm ?? Number(mmAMano)).toFixed(0)}mm · f=${focalPx.toFixed(0)}px`
-                  : 'falta'}
+                {!focalPx
+                  ? 'falta'
+                  : optica?.radial
+                    ? `f=${focalPx.toFixed(0)}px · de la calibración`
+                    : `${(optica?.focalMm ?? Number(mmAMano)).toFixed(0)}mm · f=${focalPx.toFixed(0)}px`}
               </span>
             </li>
             <li className="hay">
@@ -129,10 +137,10 @@ export function PanelGiro({ clip, cabezal }: Props) {
             </li>
           </ul>
 
-          {vigente.optica?.sensorAnchoMm && (
+          {optica?.sensorAnchoMm && !optica.radial && (
             <div className="fila nombrar">
               <span className="comentario">
-                {vigente.optica.focalMm === null ? 'lente manual · mm' : 'forzar mm'}
+                {optica.focalMm === null ? 'lente manual · mm' : 'forzar mm'}
               </span>
               <input
                 type="number"
@@ -141,7 +149,7 @@ export function PanelGiro({ clip, cabezal }: Props) {
                 max={2000}
                 step={1}
                 value={mmAMano}
-                placeholder={vigente.optica.focalMm?.toFixed(0) ?? '35'}
+                placeholder={optica.focalMm?.toFixed(0) ?? '35'}
                 onChange={(e) => setMmAMano(e.target.value)}
               />
             </div>
@@ -153,8 +161,11 @@ export function PanelGiro({ clip, cabezal }: Props) {
             Rojo, verde y azul son los tres ejes. Con la cámara quieta tienen que ser tres líneas
             planas; un paneo tiene que levantar un eje solo. El pico en °/s de arriba a la izquierda
             dice si las unidades están bien: a mano difícilmente pase de 200.
-            {vigente.optica?.focalMm === null &&
-              ' Con un lente manual la cámara no sabe la focal: poné los mm que dice el barril.'}
+            {optica?.radial
+              ? ' Esta GoPro trae su calibración de fábrica adentro del archivo, así que la focal y la curvatura del ojo de pez salen solas.'
+              : optica?.focalMm === null
+                ? ' Con un lente manual la cámara no sabe la focal: poné los mm que dice el barril.'
+                : ''}
           </small>
         </>
       )}

@@ -17,6 +17,35 @@ export interface MuestraGiro {
 export type FuenteGiro = 'sony' | 'gopro';
 
 /**
+ * El modelo radial de un lente ojo de pez, tal como lo calibra GoPro.
+ *
+ * Un lente normal se comporta como un agujero de alfiler: un punto a X grados
+ * del centro cae a `focal * tan(X)` pixeles del centro, y las lineas rectas del
+ * mundo salen rectas. Un ojo de pez no: para meter 150 grados en el cuadro
+ * comprime cada vez mas hacia los bordes, y por eso el horizonte se curva.
+ *
+ * GoPro guarda la relacion exacta en el archivo, como un polinomio que va del
+ * radio (normalizado a la media diagonal) al angulo en radianes. Eso es una
+ * calibracion de fabrica de ESA camara: mejor que cualquier perfil generico, y
+ * la razon por la que no hace falta una base de datos de lentes.
+ */
+export interface ModeloRadial {
+  /** r0..r6, tal cual vienen: angulo = r0 + r1*p + r2*p^2 + ... */
+  poly: number[];
+  /** El multiplicador que se le aplica al radio normalizado antes del polinomio. */
+  zmpl: number;
+  /**
+   * El angulo del rayo mas abierto que entro en el cuadro, en radianes.
+   *
+   * Es la mitad del campo diagonal. Sirve de tope: mas alla de eso no hay
+   * imagen, y el polinomio devolveria valores sin sentido.
+   */
+  anguloMaxRad: number | null;
+  /** Como llama GoPro al modo: Wide, Linear, Superview, Hyperview... */
+  modo: string;
+}
+
+/**
  * La optica con la que se filmo, leida de la metadata de la camara.
  *
  * Es lo que traduce "la camara giro un grado" a "la imagen se corre tantos
@@ -46,6 +75,14 @@ export interface Optica {
   sensorAnchoMm: number | null;
   /** El ancho de la imagen en pixeles, para recalcular con otra focal. */
   anchoPx: number;
+  /**
+   * Como deforma el lente, si la camara lo calibro.
+   *
+   * Sin esto la estabilizacion trata la imagen como si fuera de un lente
+   * normal, y en un ojo de pez eso corrige mal: el mismo giro mueve los bordes
+   * mucho menos que el centro. Ademas es lo que permite enderezar el horizonte.
+   */
+  radial: ModeloRadial | null;
 }
 
 /**

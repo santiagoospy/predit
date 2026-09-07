@@ -13,7 +13,7 @@
  * El formato esta documentado por GoPro (gopro/gpmf-parser).
  */
 
-import type { MuestraGiro } from './tipos';
+import type { ModeloRadial, MuestraGiro, Optica } from './tipos';
 
 /** Un nodo del arbol GPMF. */
 interface Nodo {
@@ -111,6 +111,90 @@ function numeros(vista: DataView, nodo: Nodo): number[] {
   return valores;
 }
 
+/** Lee un nodo de tipo caracter como texto. */
+function texto(vista: DataView, nodo: Nodo): string {
+  let salida = '';
+  for (let i = 0; i < nodo.largo; i++) {
+    const c = vista.getUint8(nodo.inicio + i);
+    if (c === 0) break;
+    salida += String.fromCharCode(c);
+  }
+  return salida.trim();
+}
+
+/** Como llama GoPro a cada modo de lente. */
+const MODOS: Record<string, string> = {
+  W: 'Wide',
+  L: 'Linear',
+  N: 'Narrow',
+  M: 'Medium',
+  S: 'Superview',
+  H: 'Hyperview',
+  X: 'Max Superview',
+};
+
+/**
+ * La calibracion del lente, que GoPro escribe junto al resto de la telemetria.
+ *
+ * Vive en el flujo global del dispositivo y no adentro de un stream de datos,
+ * asi que se busca por todo el arbol en vez de mirar solo los STRM.
+ */
+function buscarLente(
+  vista: DataView,
+  raiz: Nodo[],
+  anchoDelVideo: number,
+): Optica | null {
+  const hallado = new Map<string, Nodo>();
+  const recorrer = (nodos: Nodo[]) => {
+    for (const nodo of nodos) {
+      if (nodo.tipo === ANIDADO) recorrer(hijos(vista, nodo));
+      else if (!hallado.has(nodo.clave)) hallado.set(nodo.clave, nodo);
+    }
+  };
+  recorrer(raiz);
+
+  const lista = (clave: string): number[] => {
+    const nodo = hallado.get(clave);
+    return nodo ? numeros(vista, nodo) : [];
+  };
+
+  const poly = lista('POLY');
+  const zmpl = lista('ZMPL')[0];
+  const vres = lista('VRES');
+  // El primer coeficiente que importa es el lineal: es el que fija la escala.
+  const r1 = poly[1];
+  if (poly.length < 2 || !zmpl || !r1 || vres.length < 2) return null;
+  const [w, h] = [vres[0]!, vres[1]!];
+  if (!(w > 0) || !(h > 0)) return null;
+
+  // Superview y Hyperview estiran la imagen a lo ancho despues de capturarla, y
+  // ese estiramiento cambia la escala efectiva del lente.
+  const arwa = lista('ARWA')[0];
+  const aruw = lista('ARUW')[0];
+  const factor = arwa && aruw && arwa > 0 && aruw > 0 ? arwa / aruw : 1;
+
+  const mediaDiagonal = 0.5 * Math.hypot(w, h);
+  const focalCalibrada = mediaDiagonal / (r1 * zmpl * factor);
+  if (!Number.isFinite(focalCalibrada) || focalCalibrada <= 0) return null;
+
+  // La calibracion puede venir a otra resolucion que el video: la focal escala
+  // linealmente con el ancho.
+  const focalPx = anchoDelVideo > 0 ? focalCalibrada * (anchoDelVideo / w) : null;
+
+  const zfov = lista('ZFOV')[0];
+  const modoCrudo = hallado.has('VFOV') ? texto(vista, hallado.get('VFOV')!) : '';
+
+  const radial: ModeloRadial = {
+    poly,
+    zmpl,
+    // El campo diagonal viene en grados; la mitad es el rayo mas abierto.
+    anguloMaxRad: zfov && zfov > 0 && zfov < 178 ? ((zfov * 0.5 * Math.PI) / 180) : null,
+    modo: MODOS[modoCrudo] ?? modoCrudo,
+  };
+
+  return { focalPx, focalMm: null, sensorAnchoMm: null, anchoPx: anchoDelVideo, radial };
+}
+
 /**
  * Junta las ternas de giroscopio de una muestra, ya escaladas.
  *
@@ -163,8 +247,12 @@ function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number;
  * las mediciones de adentro se reparten parejo en ese tramo. Es lo mismo que
  * hacen las otras herramientas y da un error despreciable.
  */
-export function leerGoPro(muestras: { bytes: ArrayBuffer; segundo: number }[]): MuestraGiro[] {
+export function leerGoPro(
+  muestras: { bytes: ArrayBuffer; segundo: number }[],
+  anchoDelVideo = 0,
+): { muestras: MuestraGiro[]; optica: Optica | null } {
   const salida: MuestraGiro[] = [];
+  let lente: Optica | null = null;
 
   for (let i = 0; i < muestras.length; i++) {
     const muestra = muestras[i]!;
@@ -177,6 +265,9 @@ export function leerGoPro(muestras: { bytes: ArrayBuffer; segundo: number }[]): 
       raiz.push(nodo);
       pos = despues(nodo);
     }
+
+    // La calibracion no cambia dentro de un clip: se busca hasta encontrarla.
+    if (!lente) lente = buscarLente(vista, raiz, anchoDelVideo);
 
     const ternas = ternasDeMuestra(vista, raiz);
     if (ternas.length === 0) continue;
@@ -203,5 +294,5 @@ export function leerGoPro(muestras: { bytes: ArrayBuffer; segundo: number }[]): 
     }
   }
 
-  return salida;
+  return { muestras: salida, optica: lente };
 }
