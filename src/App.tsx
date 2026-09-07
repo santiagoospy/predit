@@ -5,6 +5,7 @@ import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
 import { esNeutro, GRADE_NEUTRO, LIMITES } from './color/grade';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
+import { BarraLinea } from './edit/BarraLinea';
 import { partir } from './edit/cortar';
 import { moverEnLista } from './edit/orden';
 import { Recortador } from './edit/Recortador';
@@ -209,6 +210,21 @@ export function App() {
   );
   const duracionTotal = useMemo(
     () => clips.reduce((acc, c) => acc + clipOutputDuration(c), 0),
+    [clips],
+  );
+
+  /**
+   * El cabezal del MONTAJE. `currentTime` son segundos del archivo del clip
+   * seleccionado; esto los traduce a segundos del proyecto, que es en lo que
+   * hablan la barra global, la capa y la musica.
+   */
+  const tiempoGlobal = hayClip
+    ? tiempoEnLaLinea(offsetSeleccionado, currentTime, trimIn, speed)
+    : 0;
+
+  /** Lo que la barra global necesita saber de cada clip: cuanto ocupa. */
+  const tramos = useMemo(
+    () => clips.map((c) => ({ id: c.id, duracion: clipOutputDuration(c) })),
     [clips],
   );
 
@@ -752,6 +768,10 @@ export function App() {
           if (c.id === selectedId) {
             video.currentTime = dentro;
             setCurrentTime(dentro);
+            // Saltar mientras suena dejaria la musica corrida contra la imagen;
+            // se la reengancha en el segundo nuevo, igual que hace `seek`.
+            if (video.paused) detenerMusica();
+            else arrancarMusica(segundos);
           } else {
             // Cambiar de clip recarga el <video>; el efecto de [selectedId] va a
             // recoger este segundo cuando el archivo nuevo este listo.
@@ -763,7 +783,7 @@ export function App() {
         acc += dura;
       }
     },
-    [clips, selectedId],
+    [clips, selectedId, arrancarMusica, detenerMusica],
   );
 
   const onPickClips = useCallback(async (fileList: FileList | null) => {
@@ -1091,13 +1111,16 @@ export function App() {
   }, [trimIn, trimOut, speed, offsetSeleccionado, arrancarMusica, frenar]);
 
   /**
-   * El play general: la linea de tiempo entera desde el primer clip, encadenando
-   * uno tras otro. Es la forma de ver como quedo el montaje sin exportar.
+   * El play general: el montaje desde donde quedo el cabezal global, encadenando
+   * un clip tras otro hasta el final. Es la forma de ver como quedo sin exportar.
+   *
+   * Antes arrancaba siempre en el clip 01, y con doce clips ver el final pedia
+   * mirar todo lo anterior. Ahora el punto de partida lo elige la barra global,
+   * que ya dejo el `<video>` parado en el clip y el segundo que corresponden.
    */
-  const reproducirTodo = useCallback(() => {
+  const reproducirDesdeElCabezal = useCallback(() => {
     const video = videoRef.current;
-    const primero = clips[0];
-    if (!video || !primero) return;
+    if (!video || !selected) return;
     if (todoRef.current) {
       frenar();
       return;
@@ -1105,19 +1128,14 @@ export function App() {
 
     todoRef.current = true;
     setTodo(true);
-    // La linea de tiempo arranca en cero, asi que la musica tambien.
-    arrancarMusica(0);
-
-    if (primero.id === selectedId) {
-      // Ya estamos parados ahi: cambiar la seleccion no dispararia ningun efecto.
-      video.currentTime = primero.trimIn;
-      void video.play();
-      setPlaying(true);
-    } else {
-      avanceRef.current = true;
-      setSelectedId(primero.id);
-    }
-  }, [clips, selectedId, arrancarMusica, frenar]);
+    // Si el cabezal quedo fuera del corte del clip (por ejemplo tras mover la
+    // marca de salida), se empieza por la entrada, que es lo que se va a ver.
+    if (video.currentTime < trimIn || video.currentTime >= trimOut) video.currentTime = trimIn;
+    // La musica se engancha en el segundo del montaje donde arranca la imagen.
+    arrancarMusica(tiempoEnLaLinea(offsetSeleccionado, video.currentTime, trimIn, speed));
+    void video.play();
+    setPlaying(true);
+  }, [selected, trimIn, trimOut, speed, offsetSeleccionado, arrancarMusica, frenar]);
 
   const onExport = useCallback(async () => {
     if (clips.length === 0) return;
@@ -1269,12 +1287,12 @@ export function App() {
           {hayClip && (
             <div className="controles">
               <button
-                onClick={reproducirTodo}
+                onClick={reproducirDesdeElCabezal}
                 className="principal"
                 disabled={clips.length === 0 || exportando}
-                title="Reproduce la linea de tiempo entera, encadenando los clips"
+                title="Reproduce el montaje desde donde esta el cabezal, encadenando los clips"
               >
-                {todo ? 'pausar()' : 'todo()'}
+                {todo ? 'pausar()' : 'play()'}
               </button>
               <button
                 onClick={reproducirClip}
@@ -1324,6 +1342,20 @@ export function App() {
           onEnded={avanzarOTerminar}
         />
       </main>
+
+      {/* La barra del montaje entero va aca, fuera de la hoja de pestanas: es la
+          referencia de donde estamos parados y hace falta igual mientras se
+          trabaja el color o la musica, no solo en la pestana clip. */}
+      {clips.length > 0 && (
+        <BarraLinea
+          tramos={tramos}
+          duracionTotal={duracionTotal}
+          posicion={tiempoGlobal}
+          selectedId={selectedId}
+          deshabilitado={exportando}
+          onSeek={irALaLinea}
+        />
+      )}
 
       {/* La tira quedo en lo minimo: el numero de cada clip y nada mas. Con la
           tarjeta de antes -nombre, duracion y tres acciones- cuatro clips se
@@ -1809,7 +1841,7 @@ export function App() {
                     // La capa se marca contra la LINEA DE TIEMPO entera, no contra el
                     // clip: por eso el cabezal es el segundo del montaje y no el del
                     // <video>, y por eso puede cruzar un corte.
-                    currentTime={tiempoEnLaLinea(offsetSeleccionado, currentTime, trimIn, speed)}
+                    currentTime={tiempoGlobal}
                     paso={unCuadro(DEFAULT_FRAME_RATE)}
                     centro={{
                       etiqueta: 'se ve',

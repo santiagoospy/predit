@@ -572,6 +572,62 @@ button.grande {
   margin: 0 18px 10px;
 }
 
+/* --- Barra de la linea de tiempo --- */
+
+/* La barra del montaje entero, entre el visor y la tira. Alta para el dedo
+   aunque la pista se vea fina, igual que .recortador-barra. */
+.barra-linea {
+  padding: 8px 18px 0;
+}
+
+.barra-linea-pista {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  height: 28px;
+  cursor: pointer;
+  /* Sin esto, iOS se queda con el arrastre horizontal y scrollea la pagina. */
+  touch-action: none;
+}
+
+.barra-linea-pista.apagada {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Un tramo por clip. El hueco de 2px del flex hace de linea divisoria: no hace
+   falta un borde, y asi el ultimo tramo no queda con una raya colgando. */
+.barra-linea-tramo {
+  align-self: center;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--borde-tenue);
+  pointer-events: none;
+}
+
+.barra-linea-tramo.activo {
+  background: var(--relleno);
+}
+
+/* Mismo cabezal que el del recortador, un poco mas alto porque esta barra no
+   tiene manijas que lo acompanen. */
+.barra-linea-cabezal {
+  position: absolute;
+  top: 50%;
+  height: 20px;
+  margin-top: -10px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--acento);
+  pointer-events: none;
+}
+
+.barra-linea-pie {
+  display: flex;
+  align-items: center;
+}
+
 /* --- Tira de clips --- */
 
 .tira {
