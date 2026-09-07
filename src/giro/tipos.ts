@@ -106,8 +106,15 @@ export interface DatosGiro {
   hz: number;
   /** Cuanto abarca, en segundos. */
   duracionSeconds: number;
-  /** La optica, si la camara la escribio. GoPro no lo hace. */
+  /** La optica, si la camara la escribio. */
   optica: Optica | null;
+  /**
+   * Las claves crudas que trajo el archivo, para poder ver que hay adentro.
+   *
+   * Solo sirve cuando algo no aparece: distingue "lo lei mal" de "la camara no
+   * lo escribio", que sin esto son el mismo sintoma.
+   */
+  claves: string[];
 }
 
 /** Por que no se pudo leer el giroscopio. Se muestra tal cual al usuario. */

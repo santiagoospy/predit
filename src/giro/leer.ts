@@ -79,6 +79,7 @@ export async function leerGiroscopio(
     const crudas = bytes.map((b, i) => ({ bytes: b, segundo: recortadas[i]!.segundo }));
     let muestras: MuestraGiro[];
     let optica: Optica | null = null;
+    let claves: string[] = [];
     if (fuente === 'sony') {
       const leido = leerSony(crudas, anchoDelVideo);
       muestras = leido.muestras;
@@ -89,6 +90,7 @@ export async function leerGiroscopio(
       const leido = leerGoPro(crudas, anchoDelVideo);
       muestras = leido.muestras;
       optica = leido.optica;
+      claves = leido.claves;
     }
 
     if (muestras.length === 0) {
@@ -105,6 +107,7 @@ export async function leerGiroscopio(
       hz: frecuenciaReal(muestras),
       duracionSeconds: muestras[muestras.length - 1]!.segundo - muestras[0]!.segundo,
       optica,
+      claves,
     };
   } catch (e) {
     return { motivo: `No se pudo interpretar la pista: ${comoTexto(e)}`, pistas: nombres };

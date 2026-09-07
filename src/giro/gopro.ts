@@ -139,11 +139,7 @@ const MODOS: Record<string, string> = {
  * Vive en el flujo global del dispositivo y no adentro de un stream de datos,
  * asi que se busca por todo el arbol en vez de mirar solo los STRM.
  */
-function buscarLente(
-  vista: DataView,
-  raiz: Nodo[],
-  anchoDelVideo: number,
-): Optica | null {
+function mapaDeClaves(vista: DataView, raiz: Nodo[]): Map<string, Nodo> {
   const hallado = new Map<string, Nodo>();
   const recorrer = (nodos: Nodo[]) => {
     for (const nodo of nodos) {
@@ -152,7 +148,14 @@ function buscarLente(
     }
   };
   recorrer(raiz);
+  return hallado;
+}
 
+function buscarLente(
+  vista: DataView,
+  hallado: Map<string, Nodo>,
+  anchoDelVideo: number,
+): Optica | null {
   const lista = (clave: string): number[] => {
     const nodo = hallado.get(clave);
     return nodo ? numeros(vista, nodo) : [];
@@ -250,9 +253,18 @@ function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number;
 export function leerGoPro(
   muestras: { bytes: ArrayBuffer; segundo: number }[],
   anchoDelVideo = 0,
-): { muestras: MuestraGiro[]; optica: Optica | null } {
+): { muestras: MuestraGiro[]; optica: Optica | null; claves: string[] } {
   const salida: MuestraGiro[] = [];
   let lente: Optica | null = null;
+  /**
+   * Todas las claves GPMF que aparecieron.
+   *
+   * Es diagnostico y no adorno: si la calibracion del lente no aparece, esto
+   * dice si el archivo la trae bajo otro nombre o directamente no la trae
+   * -que pasa con los modelos y firmwares que no la escriben-. Sin esto, "no
+   * la encontre" no distingue un error mio de una camara que no la guarda.
+   */
+  const claves = new Set<string>();
 
   for (let i = 0; i < muestras.length; i++) {
     const muestra = muestras[i]!;
@@ -267,7 +279,11 @@ export function leerGoPro(
     }
 
     // La calibracion no cambia dentro de un clip: se busca hasta encontrarla.
-    if (!lente) lente = buscarLente(vista, raiz, anchoDelVideo);
+    if (!lente) {
+      const hallado = mapaDeClaves(vista, raiz);
+      for (const clave of hallado.keys()) claves.add(clave);
+      lente = buscarLente(vista, hallado, anchoDelVideo);
+    }
 
     const ternas = ternasDeMuestra(vista, raiz);
     if (ternas.length === 0) continue;
@@ -294,5 +310,5 @@ export function leerGoPro(
     }
   }
 
-  return { muestras: salida, optica: lente };
+  return { muestras: salida, optica: lente, claves: [...claves].sort() };
 }

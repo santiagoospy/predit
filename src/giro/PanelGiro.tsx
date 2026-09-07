@@ -155,6 +155,13 @@ export function PanelGiro({ clip, cabezal }: Props) {
             </div>
           )}
 
+          {/* Cuando falta la calibracion, lo importante es saber que SI trae el
+              archivo: distingue un error de lectura de una camara que no la
+              escribe. */}
+          {!optica && vigente.claves.length > 0 && (
+            <p className="nota">/* claves del archivo: {vigente.claves.join(' ')} */</p>
+          )}
+
           <Curvas muestras={vigente.muestras} cabezal={cabezal} />
 
           <small>

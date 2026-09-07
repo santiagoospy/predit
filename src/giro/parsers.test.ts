@@ -324,3 +324,51 @@ describe('calibracion del lente de GoPro', () => {
     expect(muestras).toHaveLength(1);
   });
 });
+
+describe('diagnostico de claves de GoPro', () => {
+  it('informa las claves que trae el archivo aunque no haya calibracion', () => {
+    const gyro = nodo('GYRO', 's', 6, 1, [0, 100, 0, 0, 0, 0]);
+    const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
+    const stnm = nodo('STNM', 'c', 1, 4, [...'Gyro'].map((c) => c.charCodeAt(0)));
+    const strm = nodo('STRM', '\0', 1, stnm.length + scal.length + gyro.length, [
+      ...stnm,
+      ...scal,
+      ...gyro,
+    ]);
+    const devc = nodo('DEVC', '\0', 1, strm.length, strm);
+
+    const { claves, optica } = leerGoPro(
+      [{ bytes: new Uint8Array(devc).buffer, segundo: 0 }],
+      4000,
+    );
+    expect(optica).toBeNull();
+    // Las hojas del arbol, no los contenedores: es lo que permite ver si la
+    // calibracion vino con otro nombre.
+    expect(claves).toContain('GYRO');
+    expect(claves).toContain('SCAL');
+    expect(claves).toContain('STNM');
+  });
+
+  it('no informa nada raro cuando la calibracion si esta', () => {
+    const { claves, optica } = leerGoPro([{ bytes: conLenteParaClaves(), segundo: 0 }], 4000);
+    expect(optica).not.toBeNull();
+    expect(claves).toContain('POLY');
+  });
+
+  /** Repite la muestra con calibracion, para no depender del otro describe. */
+  function conLenteParaClaves(): ArrayBuffer {
+    const b = new DataView(new ArrayBuffer(16));
+    [0, 1.1, 0, 0.12].forEach((v, i) => b.setFloat32(i * 4, v));
+    const poly = nodo('POLY', 'f', 4, 4, [...new Uint8Array(b.buffer)]);
+    const z = new DataView(new ArrayBuffer(4));
+    z.setFloat32(0, 0.9);
+    const zmpl = nodo('ZMPL', 'f', 4, 1, [...new Uint8Array(z.buffer)]);
+    const vres = nodo('VRES', 'L', 4, 2, [0, 0, 15, 160, 0, 0, 11, 184]);
+    const gyro = nodo('GYRO', 's', 6, 1, [0, 100, 0, 0, 0, 0]);
+    const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
+    const strm = nodo('STRM', '\0', 1, scal.length + gyro.length, [...scal, ...gyro]);
+    const cuerpo = [...poly, ...zmpl, ...vres, ...strm];
+    const devc = nodo('DEVC', '\0', 1, cuerpo.length, cuerpo);
+    return new Uint8Array(devc).buffer;
+  }
+});
