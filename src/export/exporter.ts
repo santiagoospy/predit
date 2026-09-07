@@ -7,12 +7,11 @@ import {
   Input,
   Mp4OutputFormat,
   Output,
-  QUALITY_HIGH,
+  Quality,
   VideoSampleSink,
   getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec,
   type AudioCodec,
-  type VideoCodec,
 } from 'mediabunny';
 
 import { decodeAudioRange } from '../audio/decode';
@@ -28,7 +27,12 @@ import {
 import type { Lut3D } from '../color/cube';
 import { LutRenderer, type FitMode, type Framing } from '../color/renderer';
 import { capaEnSegundo, capaVisibleEn, framingDeCapa } from '../edit/types';
-import type { ExportPreset } from './presets';
+import {
+  EXPORT_AUDIO_BITRATE,
+  EXPORT_KEYFRAME_INTERVAL,
+  EXPORT_VIDEO_BITRATE,
+  type ExportPreset,
+} from './presets';
 
 export interface ExportClip {
   file: File;
@@ -157,11 +161,21 @@ export async function exportClips(
     target,
   });
 
-  const source = new CanvasSource(canvas, { codec, bitrate: QUALITY_HIGH });
+  const source = new CanvasSource(canvas, {
+    codec,
+    quality: new Quality({
+      bitrate: EXPORT_VIDEO_BITRATE[codec],
+      bitrateMode: 'variable',
+    }),
+    keyFrameInterval: EXPORT_KEYFRAME_INTERVAL,
+  });
   output.addVideoTrack(source, { frameRate });
 
   const audioSource = mezcla
-    ? new AudioBufferSource({ codec: mezcla.codec, quality: QUALITY_HIGH })
+    ? new AudioBufferSource({
+        codec: mezcla.codec,
+        quality: new Quality({ bitrate: EXPORT_AUDIO_BITRATE }),
+      })
     : null;
   if (audioSource) output.addAudioTrack(audioSource);
   const volcarAudio = crearVolcadoDeAudio(audioSource, mezcla?.buffer ?? null);
@@ -323,7 +337,7 @@ async function renderClip(clip: ExportClip, ctx: RenderClipContext): Promise<num
   return framesWritten;
 }
 
-async function pickCodec(preset: ExportPreset): Promise<VideoCodec> {
+async function pickCodec(preset: ExportPreset): Promise<'avc' | 'hevc'> {
   const codec = await getFirstEncodableVideoCodec(['avc', 'hevc'], {
     width: preset.width,
     height: preset.height,
@@ -334,7 +348,9 @@ async function pickCodec(preset: ExportPreset): Promise<VideoCodec> {
         'Proba con un preset de menor resolucion.',
     );
   }
-  return codec;
+  // La firma de mediabunny devuelve la union completa de codecs, pero solo puede
+  // salir uno de los dos que le pedimos, y de eso depende que bitrate usamos.
+  return codec as 'avc' | 'hevc';
 }
 
 /**

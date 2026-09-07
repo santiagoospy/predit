@@ -25,7 +25,7 @@ export const EXPORT_PRESETS: ExportPreset[] = [
     id: 'h1080',
     nombre: '1080p horizontal',
     slug: 'horizontal_16:9',
-    detalle: '1920×1080 · liviano de pasar al celular, Edits reencuadra despues',
+    detalle: '1920×1080 · misma calidad que el 4K, Edits reencuadra despues',
     width: 1920,
     height: 1080,
   },
@@ -41,7 +41,7 @@ export const EXPORT_PRESETS: ExportPreset[] = [
     id: 'uhd',
     nombre: 'UHD 4K',
     slug: 'uhd_4k',
-    detalle: '3840×2160 · maxima calidad, archivos grandes',
+    detalle: '3840×2160 · maxima resolucion, archivos grandes',
     width: 3840,
     height: 2160,
   },
@@ -71,3 +71,28 @@ export function conformSpeed(sourceFrameRate: number, projectFrameRate: number):
 export function minimumCleanSpeed(sourceFrameRate: number, projectFrameRate: number): number {
   return conformSpeed(sourceFrameRate, projectFrameRate);
 }
+
+/**
+ * Bitrate de video, en bits por segundo, para TODOS los presets.
+ *
+ * Es el que mediabunny le asignaba solo al UHD 4K con QUALITY_HIGH: su calculo
+ * escala con los pixeles, asi que el 1080p recibia una cuarta parte y se veia
+ * peor sin motivo. Fijandolo parejo, el vertical y el 16:9 salen con la misma
+ * densidad de bits que el 4K. El precio es el peso del archivo.
+ *
+ * Hay un numero por codec porque HEVC comprime ~40% mejor que AVC a igual
+ * calidad percibida.
+ */
+export const EXPORT_VIDEO_BITRATE: Record<'avc' | 'hevc', number> = {
+  avc: 22_809_000,
+  hevc: 13_686_000,
+};
+
+/** Audio: 192 kbps es el maximo que AAC acepta en mediabunny. Pesa poco al lado del video. */
+export const EXPORT_AUDIO_BITRATE = 192_000;
+
+/**
+ * Cada cuanto va un fotograma clave. El default de mediabunny es 2 segundos;
+ * 1 hace mas agil el scrubbing en el editor de destino.
+ */
+export const EXPORT_KEYFRAME_INTERVAL = 1;
