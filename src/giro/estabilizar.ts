@@ -56,6 +56,41 @@ export interface Mapeo {
 }
 
 /**
+ * Traduce la orientacion que declara la camara a un mapeo de ejes.
+ *
+ * Tanto GoPro (la clave ORIN) como Sony (el tag 0xe43a) escriben una cadena de
+ * tres letras que dice, para cada canal guardado, a que eje de la camara
+ * corresponde. La mayuscula es el eje positivo y la minuscula el negativo: por
+ * ejemplo "ZXY" quiere decir que el primer canal es el eje Z, el segundo el X y
+ * el tercero el Y; "Zxy" seria lo mismo con los dos ultimos invertidos.
+ *
+ * Esto es exactamente lo que antes habia que adivinar. Con la cadena del propio
+ * archivo, el mapeo deja de ser una suposicion que solo se confirma probando.
+ */
+export function mapeoDesdeOrientacion(declarada: string): Mapeo | null {
+  const limpia = declarada.trim();
+  if (limpia.length !== 3) return null;
+
+  const canales = ['x', 'y', 'z'] as const;
+  const destino = new Map<string, { de: 'x' | 'y' | 'z'; signo: 1 | -1 }>();
+
+  for (let i = 0; i < 3; i++) {
+    const letra = limpia[i]!;
+    const eje = letra.toLowerCase();
+    if (eje !== 'x' && eje !== 'y' && eje !== 'z') return null;
+    // La minuscula marca el eje invertido.
+    destino.set(eje, { de: canales[i]!, signo: letra === eje ? -1 : 1 });
+  }
+
+  const pitch = destino.get('x');
+  const yaw = destino.get('y');
+  const roll = destino.get('z');
+  // Si algun eje se repite, falta otro y el mapeo no sirve.
+  if (!pitch || !yaw || !roll) return null;
+  return { pitch, yaw, roll };
+}
+
+/**
  * El mapeo de Sony.
  *
  * Sony ordena las ternas como pitch, roll, yaw (asi esta anotado en

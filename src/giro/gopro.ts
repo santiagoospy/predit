@@ -253,9 +253,23 @@ function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number;
 export function leerGoPro(
   muestras: { bytes: ArrayBuffer; segundo: number }[],
   anchoDelVideo = 0,
-): { muestras: MuestraGiro[]; optica: Optica | null; claves: string[] } {
+): {
+  muestras: MuestraGiro[];
+  optica: Optica | null;
+  claves: string[];
+  orientacionEjes: string | null;
+  modelo: string | null;
+} {
   const salida: MuestraGiro[] = [];
   let lente: Optica | null = null;
+  /**
+   * ORIN: como estan montados los ejes del giroscopio, y DVNM: el modelo.
+   *
+   * ORIN es el dato que evita adivinar el mapeo de ejes, que es el error que
+   * despues se ve como "estabiliza al reves".
+   */
+  let orientacionEjes: string | null = null;
+  let modelo: string | null = null;
   /**
    * Todas las claves GPMF que aparecieron.
    *
@@ -283,6 +297,10 @@ export function leerGoPro(
       const hallado = mapaDeClaves(vista, raiz);
       for (const clave of hallado.keys()) claves.add(clave);
       lente = buscarLente(vista, hallado, anchoDelVideo);
+      const orin = hallado.get('ORIN');
+      if (orin && !orientacionEjes) orientacionEjes = texto(vista, orin);
+      const dvnm = hallado.get('DVNM');
+      if (dvnm && !modelo) modelo = texto(vista, dvnm);
     }
 
     const ternas = ternasDeMuestra(vista, raiz);
@@ -310,5 +328,11 @@ export function leerGoPro(
     }
   }
 
-  return { muestras: salida, optica: lente, claves: [...claves].sort() };
+  return {
+    muestras: salida,
+    optica: lente,
+    claves: [...claves].sort(),
+    orientacionEjes,
+    modelo,
+  };
 }

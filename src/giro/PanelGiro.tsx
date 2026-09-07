@@ -62,7 +62,13 @@ export function PanelGiro({ clip, cabezal }: Props) {
     <section className="panel">
       <div className="fila">
         <span className="comentario">giroscopio</span>
-        <span className="etiqueta">{clip ? clip.info.name : 'sin clip'}</span>
+        <span className="etiqueta">
+          {vigente && hayGiro(vigente) && vigente.modelo
+            ? vigente.modelo
+            : clip
+              ? clip.info.name
+              : 'sin clip'}
+        </span>
       </div>
 
       <p className="nota">
@@ -128,6 +134,13 @@ export function PanelGiro({ clip, cabezal }: Props) {
                   : optica?.radial
                     ? `f=${focalPx.toFixed(0)}px · de la calibración`
                     : `${(optica?.focalMm ?? Number(mmAMano)).toFixed(0)}mm · f=${focalPx.toFixed(0)}px`}
+              </span>
+            </li>
+            <li className="hay">
+              <span className="marca">{vigente.orientacionEjes ? '✓' : '·'}</span>
+              <span className="nombre">ejes declarados</span>
+              <span className="detalle">
+                {vigente.orientacionEjes ?? 'hay que adivinarlos'}
               </span>
             </li>
             <li className="hay">

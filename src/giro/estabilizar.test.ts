@@ -15,6 +15,7 @@ import {
   orientacionEn,
   prepararEstabilizacion,
   suavizar,
+  mapeoDesdeOrientacion,
   MAPEO_SONY,
   type Mapeo,
 } from './estabilizar';
@@ -288,5 +289,44 @@ describe('focalPxDesdeMm', () => {
     expect(focalPxDesdeMm(0, 36, 1920)).toBeNull();
     expect(focalPxDesdeMm(35, 0, 1920)).toBeNull();
     expect(focalPxDesdeMm(35, 36, 0)).toBeNull();
+  });
+});
+
+describe('mapeoDesdeOrientacion', () => {
+  it('lee la cadena que declara la camara', () => {
+    // "XYZ": cada canal va a su eje homonimo, todos positivos.
+    expect(mapeoDesdeOrientacion('XYZ')).toEqual({
+      pitch: { de: 'x', signo: 1 },
+      yaw: { de: 'y', signo: 1 },
+      roll: { de: 'z', signo: 1 },
+    });
+  });
+
+  it('la minuscula invierte el eje', () => {
+    expect(mapeoDesdeOrientacion('XYz')?.roll).toEqual({ de: 'z', signo: -1 });
+  });
+
+  it('reordena los canales cuando la camara los guarda en otro orden', () => {
+    // "ZXY": el primer canal es el eje Z, el segundo el X, el tercero el Y.
+    const mapeo = mapeoDesdeOrientacion('ZXY')!;
+    expect(mapeo.roll).toEqual({ de: 'x', signo: 1 });
+    expect(mapeo.pitch).toEqual({ de: 'y', signo: 1 });
+    expect(mapeo.yaw).toEqual({ de: 'z', signo: 1 });
+  });
+
+  it('el mapeo leido produce la misma rotacion que armarlo a mano', () => {
+    const muestras = giro([7, 0, 0], 1);
+    const leido = integrar(muestras, mapeoDesdeOrientacion('XYZ')!);
+    const aMano = integrar(muestras, DIRECTO);
+    expect(enGrados(leido[leido.length - 1]!.q)).toBeCloseTo(
+      enGrados(aMano[aMano.length - 1]!.q),
+      6,
+    );
+  });
+
+  it('rechaza una cadena que no describe tres ejes distintos', () => {
+    expect(mapeoDesdeOrientacion('XXY')).toBeNull();
+    expect(mapeoDesdeOrientacion('XY')).toBeNull();
+    expect(mapeoDesdeOrientacion('ABC')).toBeNull();
   });
 });

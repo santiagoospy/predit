@@ -115,6 +115,15 @@ export interface DatosGiro {
    * lo escribio", que sin esto son el mismo sintoma.
    */
   claves: string[];
+  /**
+   * Como declara la camara el orden y el signo de los ejes, si lo declara.
+   *
+   * GoPro lo escribe en ORIN y Sony en su tag 0xe43a. Es el dato que convierte
+   * el mapeo de ejes de una suposicion en algo leido del archivo.
+   */
+  orientacionEjes: string | null;
+  /** El modelo, tal como lo escribe la camara. */
+  modelo: string | null;
 }
 
 /** Por que no se pudo leer el giroscopio. Se muestra tal cual al usuario. */

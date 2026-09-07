@@ -205,9 +205,11 @@ function recorrer(vista: DataView, desde: number, hasta: number, salida: Crudo):
 export function leerSony(
   muestras: { bytes: ArrayBuffer; segundo: number }[],
   anchoDelVideo = 0,
-): { muestras: MuestraGiro[]; optica: Optica | null } {
+): { muestras: MuestraGiro[]; optica: Optica | null; orientacionEjes: string | null } {
   const salida: MuestraGiro[] = [];
   let lente: Optica | null = null;
+  /** Como declara Sony el orden y el signo de los ejes (tag 0xe43a). */
+  let orientacionEjes: string | null = null;
   let escala: number | null = null;
   let enRadianes = false;
   let frecuencia: number | null = null;
@@ -220,6 +222,7 @@ export function leerSony(
     recorrer(vista, CABECERA, vista.byteLength, crudo);
     // La optica se lee una sola vez: no cambia dentro de un clip.
     if (!lente && anchoDelVideo > 0) lente = optica(crudo, anchoDelVideo);
+    if (!orientacionEjes && crudo.orientacion) orientacionEjes = crudo.orientacion;
     if (crudo.ternas.length === 0) continue;
 
     // La escala y la frecuencia suelen venir solo en algunas muestras: la
@@ -248,5 +251,5 @@ export function leerSony(
     }
   }
 
-  return { muestras: salida, optica: lente };
+  return { muestras: salida, optica: lente, orientacionEjes };
 }

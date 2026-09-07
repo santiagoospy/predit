@@ -80,10 +80,13 @@ export async function leerGiroscopio(
     let muestras: MuestraGiro[];
     let optica: Optica | null = null;
     let claves: string[] = [];
+    let orientacionEjes: string | null = null;
+    let modelo: string | null = null;
     if (fuente === 'sony') {
       const leido = leerSony(crudas, anchoDelVideo);
       muestras = leido.muestras;
       optica = leido.optica;
+      orientacionEjes = leido.orientacionEjes;
     } else {
       // GoPro guarda su propia calibracion de fabrica en el archivo, asi que de
       // aca sale tanto la focal como el modelo del ojo de pez.
@@ -91,6 +94,8 @@ export async function leerGiroscopio(
       muestras = leido.muestras;
       optica = leido.optica;
       claves = leido.claves;
+      orientacionEjes = leido.orientacionEjes;
+      modelo = leido.modelo;
     }
 
     if (muestras.length === 0) {
@@ -108,6 +113,8 @@ export async function leerGiroscopio(
       duracionSeconds: muestras[muestras.length - 1]!.segundo - muestras[0]!.segundo,
       optica,
       claves,
+      orientacionEjes,
+      modelo,
     };
   } catch (e) {
     return { motivo: `No se pudo interpretar la pista: ${comoTexto(e)}`, pistas: nombres };
