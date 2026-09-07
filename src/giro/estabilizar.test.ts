@@ -330,3 +330,75 @@ describe('mapeoDesdeOrientacion', () => {
     expect(mapeoDesdeOrientacion('ABC')).toBeNull();
   });
 });
+
+describe('matrizUvEn', () => {
+  const opciones = {
+    suavidad: 0.4,
+    desfase: 0,
+    focalPx: 1200,
+    ancho: 1920,
+    alto: 1080,
+    mapeo: DIRECTO,
+  };
+  const cuadros = Array.from({ length: 10 }, (_, i) => i / 10);
+
+  const temblor = () => {
+    const muestras: MuestraGiro[] = [];
+    for (let i = 0; i <= 400; i++) {
+      muestras.push({ segundo: i / 400, x: 25 * Math.sin(i / 9), y: 15 * Math.cos(i / 6), z: 5 });
+    }
+    return muestras;
+  };
+
+  /** Aplica una matriz 3x3 por filas a un punto, con division de perspectiva. */
+  const aplicar = (m: number[], x: number, y: number) => {
+    const w = m[6]! * x + m[7]! * y + m[8]!;
+    return [(m[0]! * x + m[1]! * y + m[2]!) / w, (m[3]! * x + m[4]! * y + m[5]!) / w] as const;
+  };
+
+  it('da el mismo punto que la matriz en pixeles', () => {
+    const e = prepararEstabilizacion(temblor(), cuadros, opciones);
+    const enPx = e.matrizEn(0.37);
+    const enUv = e.matrizUvEn(0.37);
+
+    // Varios puntos repartidos, no solo el centro: un error de escala en un eje
+    // se esconde justo en el medio de la imagen.
+    for (const [ux, uy] of [
+      [0.5, 0.5],
+      [0, 0],
+      [1, 1],
+      [0.25, 0.8],
+    ]) {
+      const [px, py] = aplicar(enPx, ux! * opciones.ancho, uy! * opciones.alto);
+      const [vx, vy] = aplicar(enUv, ux!, uy!);
+      expect(vx).toBeCloseTo(px / opciones.ancho, 9);
+      expect(vy).toBeCloseTo(py / opciones.alto, 9);
+    }
+  });
+
+  it('la camara quieta deja el uv como estaba', () => {
+    const e = prepararEstabilizacion(giro([0, 0, 0], 1), cuadros, opciones);
+    const [vx, vy] = aplicar(e.matrizUvEn(0.5), 0.3, 0.7);
+    expect(vx).toBeCloseTo(0.3, 6);
+    expect(vy).toBeCloseTo(0.7, 6);
+  });
+
+  it('todo el cuadro cae adentro de la textura', () => {
+    const e = prepararEstabilizacion(temblor(), cuadros, opciones);
+    for (const cuadro of cuadros) {
+      const m = e.matrizUvEn(cuadro);
+      for (const [ux, uy] of [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+        [1, 1],
+      ]) {
+        const [vx, vy] = aplicar(m, ux!, uy!);
+        expect(vx).toBeGreaterThanOrEqual(-1e-4);
+        expect(vy).toBeGreaterThanOrEqual(-1e-4);
+        expect(vx).toBeLessThanOrEqual(1 + 1e-4);
+        expect(vy).toBeLessThanOrEqual(1 + 1e-4);
+      }
+    }
+  });
+});

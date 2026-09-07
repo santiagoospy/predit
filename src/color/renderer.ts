@@ -68,6 +68,8 @@ export class LutRenderer {
   private grade: Grade = GRADE_NEUTRO;
   /** Si ya se subio una imagen de capa. Sin esto, drawOverlay dibujaria basura. */
   private hayOverlay = false;
+  /** La correccion del cuadro que se esta por dibujar, o null si no hay. */
+  private estabilizacion: number[] | null = null;
   private disposed = false;
 
   constructor(private readonly canvas: HTMLCanvasElement | OffscreenCanvas) {
@@ -92,6 +94,7 @@ export class LutRenderer {
       'uLutConv', 'uHasConv', 'uSizeConv', 'uDomMinConv', 'uDomMaxConv',
       'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook',
       'uLift', 'uGamma', 'uGain',
+      'uEstab', 'uHayEstab',
     ];
     for (const name of uniformNames) {
       this.loc[name] = gl.getUniformLocation(this.program, name);
@@ -151,6 +154,22 @@ export class LutRenderer {
     this.grade = grade;
   }
 
+  /**
+   * Fija la correccion de estabilizacion del proximo cuadro, o la apaga con
+   * null.
+   *
+   * Se pasa por cuadro y no una vez por clip porque la correccion cambia con el
+   * tiempo: es la diferencia entre donde apuntaba la camara y donde deberia
+   * haber apuntado, y eso es distinto en cada instante.
+   *
+   * La matriz llega en orden por filas, que es como la arma la matematica; la
+   * GPU la espera por columnas, asi que se transpone al subirla.
+   */
+  setEstabilizacion(matriz: number[] | null): void {
+    this.assertAlive();
+    this.estabilizacion = matriz;
+  }
+
   resize(width: number, height: number): void {
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
@@ -189,6 +208,7 @@ export class LutRenderer {
     this.bindGrade(bypass ? GRADE_NEUTRO : this.grade);
     gl.uniform1f(this.loc['uOpacity']!, 1);
     gl.uniform1i(this.loc['uUsarAlfa']!, 0);
+    this.bindEstabilizacion(bypass ? null : this.estabilizacion);
 
     this.dibujarQuad(framing);
   }
@@ -231,6 +251,9 @@ export class LutRenderer {
     this.bindGrade(GRADE_NEUTRO);
     gl.uniform1f(this.loc['uOpacity']!, Math.min(1, Math.max(0, opacity)));
     gl.uniform1i(this.loc['uUsarAlfa']!, 1);
+    // La capa NO se estabiliza: un logo va pegado al cuadro, no al mundo. Sin
+    // esto temblaria al reves que la imagen, que es lo peor de los dos mundos.
+    this.bindEstabilizacion(null);
 
     // ONE y no SRC_ALPHA porque la textura viene con el alfa ya premultiplicado
     // (asi la pide cargarImagen). Con SRC_ALPHA la capa saldria atenuada dos
@@ -299,6 +322,15 @@ export class LutRenderer {
       computeFitTransform(framing, this.canvas.width, this.canvas.height),
     );
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  private bindEstabilizacion(matriz: number[] | null): void {
+    const gl = this.gl;
+    gl.uniform1i(this.loc['uHayEstab']!, matriz ? 1 : 0);
+    if (matriz) {
+      // true en el tercer argumento: transponer de filas a columnas.
+      gl.uniformMatrix3fv(this.loc['uEstab']!, true, matriz);
+    }
   }
 
   private bindLut(slot: LutSlot, unit: number, suffix: string, bypass: boolean): void {

@@ -233,6 +233,15 @@ export interface Estabilizacion {
    * imagen de ENTRADA que hay que muestrear, en orden por filas.
    */
   matrizEn: (segundo: number) => number[];
+  /**
+   * Lo mismo pero en coordenadas de textura (0 a 1), que es lo que consume el
+   * shader.
+   *
+   * El shader trabaja en UV y no en pixeles porque asi no necesita saber a que
+   * resolucion se decodifico el cuadro: la misma matriz sirve para el preview
+   * chico y para el export a tamano completo.
+   */
+  matrizUvEn: (segundo: number) => number[];
   /** Cuanto hay que agrandar la imagen para que no entren bordes negros. */
   zoom: number;
   /** El angulo maximo que llega a corregir, en grados. Es el diagnostico. */
@@ -325,6 +334,24 @@ function zoomNecesario(correcciones: Quat[], o: Opciones): number {
 }
 
 /**
+ * Pasa una matriz de pixeles a coordenadas de textura.
+ *
+ * Es un cambio de escala a los dos lados: se entra un UV, se lo lleva a pixeles
+ * para poder aplicar la matriz, y el resultado se vuelve a normalizar. Hacerlo
+ * aca y no en el shader ahorra pasarle la resolucion a la GPU.
+ */
+function aEspacioUv(m: number[], o: Opciones): number[] {
+  const w = o.ancho;
+  const h = o.alto;
+  // Equivale a diag(1/w, 1/h, 1) * m * diag(w, h, 1).
+  return [
+    m[0]!, (m[1]! * h) / w, m[2]! / w,
+    (m[3]! * w) / h, m[4]!, m[5]! / h,
+    m[6]! * w, m[7]! * h, m[8]!,
+  ];
+}
+
+/**
  * Prepara la estabilizacion de un clip.
  *
  * `cuadros` son los momentos en los que se va a pedir la correccion, y sirven
@@ -357,6 +384,7 @@ export function prepararEstabilizacion(
 
   return {
     matrizEn: (segundo) => matrizDeMuestreo(correccionEn(segundo), o, zoom),
+    matrizUvEn: (segundo) => aEspacioUv(matrizDeMuestreo(correccionEn(segundo), o, zoom), o),
     zoom,
     correccionMaxGrados: (maximo * 180) / Math.PI,
   };

@@ -30,6 +30,20 @@ out vec4 fragColor;
 
 uniform sampler2D uFrame;
 
+/**
+ * La correccion de la estabilizacion, en coordenadas de textura.
+ *
+ * Lleva un punto de la imagen de SALIDA al punto de la imagen de ENTRADA que
+ * hay que muestrear. Sale de la rotacion que midio el giroscopio: la camara
+ * temblo, y esto deshace ese temblor moviendo lo que se lee de la textura.
+ *
+ * Va en el fragment y no en el vertex porque no es una transformacion del
+ * cuadrilatero sino del muestreo: la geometria del encuadre ya la resuelve
+ * uTransform, y son dos cosas distintas que se componen.
+ */
+uniform mat3 uEstab;
+uniform bool uHayEstab;
+
 /** Cuanto se ve la capa, de 0 a 1. El clip de abajo siempre va en 1. */
 uniform float uOpacity;
 /** Si respetar la transparencia de la textura. El clip de abajo es opaco. */
@@ -74,7 +88,15 @@ vec3 applyLut(sampler3D lut, float size, vec3 domMin, vec3 domMax, vec3 color) {
 }
 
 void main() {
-  vec4 src = texture(uFrame, vUv);
+  vec2 uv = vUv;
+  if (uHayEstab) {
+    vec3 p = uEstab * vec3(vUv, 1.0);
+    // La division de perspectiva: una rotacion de camara no es una traslacion
+    // plana, y sin dividir por w los bordes quedarian corridos.
+    uv = p.xy / p.z;
+  }
+
+  vec4 src = texture(uFrame, uv);
   vec3 color = src.rgb;
 
   // El grade va antes de los LUTs: sobre la senal cruda, todavia en log.

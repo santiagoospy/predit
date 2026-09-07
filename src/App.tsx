@@ -44,7 +44,9 @@ import {
   EXPORT_PRESETS,
   type ExportPreset,
 } from './export/presets';
+import type { Estabilizacion } from './giro/estabilizar';
 import { PanelGiro } from './giro/PanelGiro';
+import { Deslizador } from './ui/Deslizador';
 import { guardarLut, guardarMedio } from './proyecto/almacen';
 import { horaCorta, huellaDe } from './proyecto/esquema';
 import { PanelProyecto } from './proyecto/PanelProyecto';
@@ -94,6 +96,13 @@ export function App() {
   const cuerpoRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<LutRenderer | null>(null);
   const bypassRef = useRef(false);
+  /**
+   * La correccion de estabilizacion del clip seleccionado, o null.
+   *
+   * Va en un ref y no en estado porque la consume el bucle de dibujo: guardarla
+   * en useState re-montaria el bucle en cada cambio de deslizador.
+   */
+  const estabRef = useRef<Estabilizacion | null>(null);
   const framingRef = useRef<Framing | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /** Lo mismo que `todo`, pero para los efectos: leerlo no los re-suscribe. */
@@ -651,6 +660,9 @@ export function App() {
       if (stop || !framing || video.readyState < 2) return;
       try {
         renderer.clear();
+        // La correccion depende del momento del clip: se pide por cuadro.
+        const estab = estabRef.current;
+        renderer.setEstabilizacion(estab ? estab.matrizUvEn(video.currentTime) : null);
         renderer.draw(video, framing, bypassRef.current);
 
         const capaActual = capaRef.current;
@@ -1169,6 +1181,17 @@ export function App() {
     setListo(bytes > 0 ? `se liberaron ${formatBytes(bytes)}` : 'no había nada que liberar');
   }, []);
 
+  /**
+   * Recibe la correccion del panel del giroscopio.
+   *
+   * Con useCallback y sin dependencias para que su identidad no cambie: el
+   * panel la tiene en un efecto, y una funcion nueva por render lo dispararia
+   * en loop.
+   */
+  const guardarEstabilizacion = useCallback((e: Estabilizacion | null) => {
+    estabRef.current = e;
+  }, []);
+
   const onExport = useCallback(async () => {
     if (clips.length === 0) return;
     frenar();
@@ -1653,7 +1676,13 @@ export function App() {
 
           {/* Prueba de lectura del giroscopio. Va con el clip porque es una
               propiedad del archivo, como los avisos de arriba. */}
-          {pestana === 'clip' && <PanelGiro clip={selected ?? null} cabezal={currentTime} />}
+          {pestana === 'clip' && (
+            <PanelGiro
+              clip={selected ?? null}
+              cabezal={currentTime}
+              onEstabilizacion={guardarEstabilizacion}
+            />
+          )}
 
           {pestana === 'color' && (
             <section className="panel">
@@ -2145,42 +2174,6 @@ function LutChooser({
 /** Un lift de 0.10 se lee mejor como "+0.10" que como "0.10". */
 function conSigno(valor: number): string {
   return valor > 0 ? '+' + valor.toFixed(2) : valor.toFixed(2);
-}
-
-function Deslizador({
-  etiqueta,
-  valor,
-  min = 0,
-  max,
-  paso,
-  onChange,
-  texto,
-  deshabilitado,
-}: {
-  etiqueta: string;
-  valor: number;
-  min?: number;
-  max: number;
-  paso?: number;
-  onChange: (valor: number) => void;
-  texto: string;
-  deshabilitado?: boolean;
-}) {
-  return (
-    <label className={`deslizador${deshabilitado ? ' apagado' : ''}`}>
-      <span className="comentario">{etiqueta}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={paso ?? 0.01}
-        value={valor}
-        disabled={deshabilitado ?? false}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      <span className="valor">{texto}</span>
-    </label>
-  );
 }
 
 /**
