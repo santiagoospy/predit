@@ -6,7 +6,8 @@ import { DEFAULT_PRESET, EXPORT_PRESETS } from '../export/presets';
 import type { ClipInfo } from '../media/probe';
 import type { ProyectoDoc } from './esquema';
 import { SLOT_CAPA, SLOT_MUSICA } from './esquema';
-import { reconstruir } from './restaurar';
+import { claveMedio, huellaDe } from './esquema';
+import { reconstruir, resolverDesdeAlmacen } from './restaurar';
 
 // Los tres unicos caminos que tocan el navegador se reemplazan; el resto de
 // `reconstruir` (que es donde estan las reglas) corre de verdad.
@@ -16,10 +17,12 @@ vi.mock('../media/probe', async (original) => ({
 }));
 vi.mock('../audio/decode', () => ({ decodeAudioRange: vi.fn() }));
 vi.mock('../media/imagen', () => ({ cargarImagen: vi.fn() }));
+vi.mock('./almacen', () => ({ leerMedios: vi.fn(), guardarMedio: vi.fn() }));
 
 const { probeClip } = await import('../media/probe');
 const { decodeAudioRange } = await import('../audio/decode');
 const { cargarImagen } = await import('../media/imagen');
+const { leerMedios } = await import('./almacen');
 
 const INFO: ClipInfo = {
   name: 'C0021.MP4',
@@ -83,6 +86,7 @@ beforeEach(() => {
   vi.mocked(probeClip).mockReset().mockResolvedValue(INFO);
   vi.mocked(decodeAudioRange).mockReset();
   vi.mocked(cargarImagen).mockReset();
+  vi.mocked(leerMedios).mockReset().mockResolvedValue(new Map());
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:falso');
 });
 
@@ -352,5 +356,43 @@ describe('reconstruir', () => {
     expect(estado.selectedId).toBeNull();
     expect(estado.avisos).toEqual([]);
     expect(vi.mocked(probeClip)).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolverDesdeAlmacen', () => {
+  it('reparte las copias guardadas en los lugares que las esperan', async () => {
+    const file = archivo('C0021.MP4');
+    vi.mocked(leerMedios).mockResolvedValue(new Map([[claveMedio(huellaDe(file)), file]]));
+
+    const asignados = await resolverDesdeAlmacen(doc());
+    expect(asignados.get('c1')).toBe(file);
+  });
+
+  it('un clip partido en dos se llena con una sola copia', async () => {
+    const file = archivo('C0021.MP4');
+    vi.mocked(leerMedios).mockResolvedValue(new Map([[claveMedio(huellaDe(file)), file]]));
+
+    const asignados = await resolverDesdeAlmacen(
+      doc({ clips: [clipDoc('c1', 'C0021.MP4'), clipDoc('c2', 'C0021.MP4')] }),
+    );
+    expect(asignados.get('c1')).toBe(file);
+    expect(asignados.get('c2')).toBe(file);
+    // Una sola clave pedida: no se leen los mismos bytes dos veces.
+    expect(vi.mocked(leerMedios).mock.calls[0]?.[0]).toHaveLength(2);
+  });
+
+  it('sin copias devuelve vacio, y ahi la app pide los archivos', async () => {
+    expect((await resolverDesdeAlmacen(doc())).size).toBe(0);
+  });
+
+  it('el archivo rearmado sirve para reconstruir el clip', async () => {
+    const file = archivo('C0021.MP4');
+    vi.mocked(leerMedios).mockResolvedValue(new Map([[claveMedio(huellaDe(file)), file]]));
+
+    const proyecto = doc();
+    const estado = await reconstruir(proyecto, await resolverDesdeAlmacen(proyecto), []);
+    expect(estado.clips).toHaveLength(1);
+    expect(estado.clips[0]?.file).toBe(file);
+    expect(estado.avisos).toEqual([]);
   });
 });

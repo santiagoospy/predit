@@ -4,8 +4,10 @@ import type { MusicTrack, OverlayLayer, TimelineClip } from '../edit/types';
 import { EXPORT_PRESETS } from '../export/presets';
 import type { ClipInfo } from '../media/probe';
 import {
+  claveMedio,
   emparejar,
   faltantes,
+  mediosDe,
   haceCuanto,
   huellaDe,
   mismoContenido,
@@ -208,6 +210,48 @@ describe('faltantes', () => {
     };
     const doc = serializarProyecto(estado([clip('c1', archivo('a.mp4', 10, 1))], { capa }));
     expect(faltantes(doc).map((f) => f.slot)).toEqual(['c1', SLOT_CAPA]);
+  });
+});
+
+describe('claveMedio y mediosDe', () => {
+  it('el mismo archivo importado dos veces cae en una sola copia', () => {
+    const a = archivo('a.mp4', 10, 1);
+    expect(claveMedio(huellaDe(a))).toBe(claveMedio(huellaDe(archivo('a.mp4', 10, 1))));
+  });
+
+  it('distingue dos archivos con el mismo nombre pero distinta fecha', () => {
+    expect(claveMedio(huellaDe(archivo('a.mp4', 10, 1)))).not.toBe(
+      claveMedio(huellaDe(archivo('a.mp4', 10, 2))),
+    );
+  });
+
+  it('un clip partido en dos comparte una unica copia', () => {
+    const file = archivo('a.mp4', 10, 1);
+    const doc = serializarProyecto(estado([clip('c1', file), clip('c2', file)]));
+    expect(mediosDe(doc)).toEqual([claveMedio(huellaDe(file))]);
+  });
+
+  it('cuenta la capa y la musica suelta, pero no la sacada de un clip', () => {
+    const file = archivo('a.mp4', 10, 1);
+    const doc = serializarProyecto(
+      estado([clip('c1', file)], {
+        music: {
+          id: 'm1',
+          name: 'a.mp4',
+          origen: 'clip',
+          huella: huellaDe(file),
+          clipId: 'c1',
+          buffer: null as unknown as AudioBuffer,
+          duracionSeconds: 20,
+          startInMusic: 0,
+          endInMusic: 20,
+          volume: 0.8,
+          fadeIn: 0,
+          fadeOut: 1.5,
+        },
+      }),
+    );
+    expect(mediosDe(doc)).toHaveLength(1);
   });
 });
 

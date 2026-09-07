@@ -8,7 +8,7 @@
 
 import { useState } from 'react';
 
-import { formatDuration } from '../media/probe';
+import { formatBytes, formatDuration } from '../media/probe';
 import { haceCuanto, horaCorta, NOMBRE_SIN_TITULO, type ResumenProyecto } from './esquema';
 
 interface Props {
@@ -24,6 +24,12 @@ interface Props {
   onNuevo: () => void;
   /** Relee la lista al desplegarla, que es la unica vez que se mira. */
   onRefrescar: () => void;
+  /** Cuanto ocupan las copias de los archivos importados, en bytes. */
+  pesoCopias: number;
+  /** Borra las copias que ya no reclama ningun proyecto. */
+  onPurgar: () => void;
+  /** Borra las copias de este montaje. */
+  onLiberar: () => void;
 }
 
 export function PanelProyecto({
@@ -37,6 +43,9 @@ export function PanelProyecto({
   onBorrar,
   onNuevo,
   onRefrescar,
+  pesoCopias,
+  onPurgar,
+  onLiberar,
 }: Props) {
   const [nombrando, setNombrando] = useState(false);
   const [abriendo, setAbriendo] = useState(false);
@@ -159,9 +168,48 @@ export function PanelProyecto({
         </ul>
       )}
 
+      <div className="fila">
+        <span className="comentario">copias de los videos</span>
+        <span className="etiqueta">{formatBytes(pesoCopias)}</span>
+      </div>
+
+      <div className="botones par">
+        <button
+          className="chico"
+          disabled={deshabilitado || pesoCopias === 0}
+          onClick={() => {
+            if (
+              window.confirm(
+                'Borra las copias que no use ningún proyecto guardado: los clips de proyectos borrados y los que importaste y después sacaste del montaje. Lo que esté en uso no se toca.',
+              )
+            ) {
+              onPurgar();
+            }
+          }}
+        >
+          limpiar lo que sobra
+        </button>
+        <button
+          className="chico"
+          disabled={deshabilitado || !hayMontaje || pesoCopias === 0}
+          onClick={() => {
+            if (
+              window.confirm(
+                '¿Liberar las copias de este montaje? El montaje no se borra, pero la próxima vez que lo abras va a pedirte los archivos a mano.',
+              )
+            ) {
+              onLiberar();
+            }
+          }}
+        >
+          liberar este montaje
+        </button>
+      </div>
+
       <small>
-        Se guarda el montaje, no los videos: al reabrir un proyecto hay que volver a elegir los
-        archivos, y la app los reconoce solos.
+        Se guarda el montaje y además una copia de cada archivo importado, para que al reabrir un
+        proyecto no haya que volver a buscarlos. Esa copia es lo que ocupa el espacio de acá arriba:
+        cuando ya exportaste, se puede liberar.
       </small>
     </section>
   );

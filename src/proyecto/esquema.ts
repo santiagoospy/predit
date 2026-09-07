@@ -1,15 +1,15 @@
 /**
  * El proyecto serializado: la "receta" del montaje, sin un solo byte de video.
  *
- * La app guarda numeros, no material. Un clip de la GoPro pesa 120 MB y ya esta
- * en el telefono; copiarlo adentro de la app seria tenerlo dos veces y chocar
- * con la cuota del navegador. Lo que no se puede volver a calcular son los
- * recortes, las velocidades, el reencuadre y a que LUT quedo atado cada clip:
- * eso son unos pocos KB y es lo que se guarda.
+ * El documento guarda numeros, no material: los recortes, las velocidades, el
+ * reencuadre y a que LUT quedo atado cada clip. Eso son unos pocos KB.
  *
- * El precio es que al abrir un proyecto hay que volver a elegir los archivos.
- * Para que eso no sea adivinar, cada pieza guarda la HUELLA de su archivo y la
- * app los reconoce sola cuando el usuario los vuelve a elegir.
+ * De cada archivo guarda ademas su HUELLA, que cumple dos funciones: es la
+ * clave con la que el almacen de medios (`almacen.ts`) encuentra la copia de
+ * los bytes y devuelve el montaje sin preguntar nada, y es con lo que la app
+ * reconoce los archivos cuando esa copia no esta -un proyecto de antes de que
+ * existiera el almacen, o uno al que ya se le libero el espacio- y hay que
+ * pedirselos al usuario.
  *
  * Todo lo de este modulo es puro a proposito: no toca IndexedDB ni el DOM, asi
  * que se puede testear entero.
@@ -35,6 +35,20 @@ export interface HuellaArchivo {
 
 export function huellaDe(file: File): HuellaArchivo {
   return { nombre: file.name, tamano: file.size, fecha: file.lastModified };
+}
+
+/**
+ * La clave con la que se guarda y se busca la copia de un archivo.
+ *
+ * Es la mas estricta de las tres formas de reconocer un archivo (ver CLAVES mas
+ * abajo): aca no hay lugar para corazonadas, porque una coincidencia floja
+ * devolveria bytes que no son los del clip. Como es deterministica a partir de
+ * la huella, el documento del proyecto no guarda ninguna referencia extra: el
+ * mismo archivo importado dos veces, o un clip partido en dos, caen sobre la
+ * misma clave y comparten una sola copia.
+ */
+export function claveMedio(h: HuellaArchivo): string {
+  return `${h.nombre.toLowerCase()}|${h.tamano}|${h.fecha}`;
 }
 
 /** Un clip guardado: todo `TimelineClip` menos el archivo, la url y los avisos. */
@@ -245,6 +259,17 @@ export function faltantes(doc: ProyectoDoc): Faltante[] {
   return lista;
 }
 
+/**
+ * Las claves del almacen de medios que este proyecto necesita.
+ *
+ * Sale de `faltantes` y no de los clips directamente para que sea exactamente
+ * el mismo conjunto que la app pediria a mano: la musica sacada de un clip no
+ * suma una copia aparte, porque su archivo es el del clip.
+ */
+export function mediosDe(doc: ProyectoDoc): string[] {
+  return [...new Set(faltantes(doc).map((f) => claveMedio(f.huella)))];
+}
+
 export interface Emparejamiento {
   /** Del slot al archivo que le toca. */
   asignados: Map<string, File>;
@@ -261,7 +286,7 @@ export interface Emparejamiento {
  * archivo recomprimido.
  */
 const CLAVES: ((h: HuellaArchivo) => string)[] = [
-  (h) => `${h.nombre.toLowerCase()}|${h.tamano}|${h.fecha}`,
+  claveMedio,
   (h) => `${h.nombre.toLowerCase()}|${h.tamano}`,
   (h) => h.nombre.toLowerCase(),
 ];

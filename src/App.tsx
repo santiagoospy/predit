@@ -44,7 +44,7 @@ import {
   EXPORT_PRESETS,
   type ExportPreset,
 } from './export/presets';
-import { guardarLut } from './proyecto/almacen';
+import { guardarLut, guardarMedio } from './proyecto/almacen';
 import { horaCorta, huellaDe } from './proyecto/esquema';
 import { PanelProyecto } from './proyecto/PanelProyecto';
 import { ReVincular } from './proyecto/ReVincular';
@@ -786,6 +786,28 @@ export function App() {
     [clips, selectedId, arrancarMusica, detenerMusica],
   );
 
+  /**
+   * Se queda con una copia del archivo adentro de la app.
+   *
+   * Es lo que evita tener que buscar el clip de nuevo cada vez que se reabre el
+   * proyecto: en el telefono el material esta repartido entre Fotos y Archivos
+   * y no hay forma de que el navegador lo vuelva a abrir solo.
+   *
+   * No se espera a que termine: son cientos de megas y el clip ya se puede
+   * editar mientras se escribe. Si no entra -tipicamente la cuota- el montaje
+   * anda igual y lo unico que se pierde es la comodidad, asi que se avisa y se
+   * sigue.
+   */
+  const guardarCopia = useCallback((file: File) => {
+    void guardarMedio(file).then((hecho) => {
+      if (hecho) return;
+      setAvisos((prev) => [
+        ...prev.filter((a) => !a.startsWith('No entró la copia')),
+        `No entró la copia de "${file.name}" en el almacenamiento del navegador: al reabrir el proyecto se va a pedir ese archivo a mano.`,
+      ]);
+    });
+  }, []);
+
   const onPickClips = useCallback(async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     setError(null);
@@ -798,6 +820,7 @@ export function App() {
     for (const file of Array.from(fileList)) {
       try {
         const info = await probeClip(file);
+        guardarCopia(file);
         nuevos.push({
           id: nextId('clip'),
           file,
@@ -940,6 +963,7 @@ export function App() {
       detenerMusica();
       try {
         const buffer = await decodeAudioRange(file);
+        guardarCopia(file);
         setMusic({
           id: nextId('mus'),
           name: nombre,
@@ -977,6 +1001,7 @@ export function App() {
       setCapaBusy(true);
       try {
         const imagen = await cargarImagen(file);
+        guardarCopia(file);
         // La imagen anterior se libera a mano: un ImageBitmap retiene su buffer
         // hasta que se lo cierra, y cambiar de capa varias veces los acumularia.
         const anterior = capaRef.current;
@@ -1137,6 +1162,12 @@ export function App() {
     setPlaying(true);
   }, [selected, trimIn, trimOut, speed, offsetSeleccionado, arrancarMusica, frenar]);
 
+  /** Corre una limpieza del almacen y cuenta en pantalla cuanto se libero. */
+  const liberar = useCallback(async (accion: () => Promise<number>) => {
+    const bytes = await accion();
+    setListo(bytes > 0 ? `se liberaron ${formatBytes(bytes)}` : 'no había nada que liberar');
+  }, []);
+
   const onExport = useCallback(async () => {
     if (clips.length === 0) return;
     frenar();
@@ -1185,6 +1216,10 @@ export function App() {
       const nombre = `predit-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.mp4`;
       const via = await deliverExport(blob, nombre);
       setAvisos(avisosDelExport);
+      // El montaje ya salio: ahora las copias son espacio recuperable, y el
+      // panel de proyecto tiene que poder ofrecer liberarlas sin que el usuario
+      // lo despliegue primero.
+      proyecto.medirCopias();
       setListo(
         `${nombre} · ${formatBytes(blob.size)} · ${via === 'compartido' ? 'listo para compartir' : 'descargado'}`,
       );
@@ -1194,7 +1229,7 @@ export function App() {
       setProgress(null);
       abortRef.current = null;
     }
-  }, [clips, lutLibrary, preset, music, capa, frenar]);
+  }, [clips, lutLibrary, preset, music, capa, frenar, proyecto]);
 
   /**
    * Al cambiar de pestana la hoja vuelve arriba. El contenedor es siempre el
@@ -2030,7 +2065,13 @@ export function App() {
               onAbrir={(id) => void proyecto.abrir(id)}
               onBorrar={(id) => void proyecto.borrar(id)}
               onNuevo={() => void proyecto.nuevo()}
-              onRefrescar={proyecto.refrescar}
+              onRefrescar={() => {
+                proyecto.refrescar();
+                proyecto.medirCopias();
+              }}
+              pesoCopias={proyecto.pesoCopias}
+              onPurgar={() => void liberar(proyecto.purgar)}
+              onLiberar={() => void liberar(proyecto.liberarEsteMontaje)}
             />
           )}
         </div>

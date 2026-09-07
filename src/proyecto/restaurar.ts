@@ -19,7 +19,46 @@ import type { LibraryLut, MusicTrack, OverlayLayer, TimelineClip } from '../edit
 import { DEFAULT_PRESET, EXPORT_PRESETS, type ExportPreset } from '../export/presets';
 import { cargarImagen } from '../media/imagen';
 import { clipWarnings, probeClip } from '../media/probe';
-import { SLOT_CAPA, SLOT_MUSICA, type ClipDoc, type ProyectoDoc } from './esquema';
+import { guardarMedio, leerMedios } from './almacen';
+import {
+  claveMedio,
+  faltantes,
+  SLOT_CAPA,
+  SLOT_MUSICA,
+  type ClipDoc,
+  type ProyectoDoc,
+} from './esquema';
+
+/**
+ * Busca en el almacen los archivos que el proyecto necesita.
+ *
+ * Es el atajo que evita la pantalla de re-vinculacion: si al importar se pudo
+ * guardar una copia de cada archivo, esto las encuentra todas y el montaje se
+ * abre solo. Lo que no aparezca queda para pedirselo al usuario, asi que un
+ * proyecto viejo -o uno al que se le libero el espacio- sigue funcionando como
+ * antes, y uno a medias solo pide lo que falta.
+ */
+export async function resolverDesdeAlmacen(doc: ProyectoDoc): Promise<Map<string, File>> {
+  const pedidos = faltantes(doc);
+  const porClave = await leerMedios(pedidos.map((p) => claveMedio(p.huella)));
+  const asignados = new Map<string, File>();
+  for (const pedido of pedidos) {
+    const file = porClave.get(claveMedio(pedido.huella));
+    if (file) asignados.set(pedido.slot, file);
+  }
+  return asignados;
+}
+
+/**
+ * Guarda las copias de lo que el usuario acaba de elegir a mano.
+ *
+ * Es lo que migra los proyectos de antes del almacen: se re-vincula una ultima
+ * vez y a partir de ahi el proyecto se abre solo. Corre en segundo plano porque
+ * son cientos de megas y el editor ya puede empezar a usarse.
+ */
+export function recordarArchivos(asignados: Map<string, File>): void {
+  for (const file of new Set(asignados.values())) void guardarMedio(file);
+}
 
 export interface EstadoRestaurado {
   clips: TimelineClip[];

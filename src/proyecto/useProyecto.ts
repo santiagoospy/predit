@@ -20,13 +20,17 @@ import {
   leerLuts,
   leerProyecto,
   leerSesion,
+  liberarMediosDe,
   listarProyectos,
   marcarCierreLimpio,
   olvidarCierreLimpio,
   pedirPersistencia,
+  pesoMedios,
+  purgarHuerfanos,
   tomarCierreLimpio,
 } from './almacen';
 import {
+  faltantes,
   mismoContenido,
   serializarProyecto,
   NOMBRE_SIN_TITULO,
@@ -34,7 +38,12 @@ import {
   type ProyectoDoc,
   type ResumenProyecto,
 } from './esquema';
-import { reconstruir, type EstadoRestaurado } from './restaurar';
+import {
+  reconstruir,
+  recordarArchivos,
+  resolverDesdeAlmacen,
+  type EstadoRestaurado,
+} from './restaurar';
 
 /**
  * Cuanto espera el autoguardado despues del ultimo cambio.
@@ -91,11 +100,33 @@ export interface Proyecto {
   nuevo: () => Promise<void>;
   /** Entra al editor con los archivos que el usuario acaba de elegir. */
   revincular: (asignados: Map<string, File>) => Promise<void>;
+  /** Cuanto ocupan las copias de los archivos, en bytes. */
+  pesoCopias: number;
+  /** Vuelve a medir el almacen, para despues de importar o de liberar. */
+  medirCopias: () => void;
+  /** Borra las copias que ya no reclama ningun proyecto. Devuelve lo liberado. */
+  purgar: () => Promise<number>;
+  /** Borra las copias de este montaje. Devuelve lo liberado. */
+  liberarEsteMontaje: () => Promise<number>;
 }
 
 /** Un proyecto sin nada adentro se puede abrir sin pedirle archivos a nadie. */
 function necesitaArchivos(doc: ProyectoDoc): boolean {
   return doc.clips.length > 0 || doc.music !== null || doc.capa !== null;
+}
+
+/**
+ * Los archivos con los que se puede abrir el proyecto sin molestar al usuario,
+ * o null si hay que plantarse a pedirle alguno.
+ *
+ * Es todo o nada a proposito: entrar al editor con la mitad de los clips y
+ * despues no tener como recuperar el resto es peor que pedir una vez. Un
+ * proyecto vacio devuelve un mapa vacio, que igual sirve para entrar.
+ */
+async function archivosDelAlmacen(doc: ProyectoDoc): Promise<Map<string, File> | null> {
+  if (!necesitaArchivos(doc)) return new Map();
+  const asignados = await resolverDesdeAlmacen(doc);
+  return asignados.size === faltantes(doc).length ? asignados : null;
 }
 
 export function useProyecto(opciones: Opciones): Proyecto {
@@ -109,6 +140,7 @@ export function useProyecto(opciones: Opciones): Proyecto {
   const [lista, setLista] = useState<ResumenProyecto[]>([]);
   const [restaurando, setRestaurando] = useState(false);
   const [errorRestaurar, setErrorRestaurar] = useState<string | null>(null);
+  const [pesoCopias, setPesoCopias] = useState(0);
 
   /** Lo ultimo que se escribio, para no volver a escribir lo mismo. */
   const ultimoRef = useRef<ProyectoDoc | null>(null);
@@ -126,6 +158,10 @@ export function useProyecto(opciones: Opciones): Proyecto {
 
   const refrescarLista = useCallback(async () => {
     setLista(await listarProyectos());
+  }, []);
+
+  const medirCopias = useCallback(async () => {
+    setPesoCopias(await pesoMedios());
   }, []);
 
   /**
@@ -164,6 +200,7 @@ export function useProyecto(opciones: Opciones): Proyecto {
       const biblioteca = luts.map((l) => ({ id: l.id, name: l.name, lut: l.lut }));
       if (biblioteca.length > 0) opcionesRef.current.onBiblioteca(biblioteca);
       void refrescarLista();
+      void medirCopias();
 
       if (!sesion) {
         setFase('editando');
@@ -174,10 +211,13 @@ export function useProyecto(opciones: Opciones): Proyecto {
       conNombreRef.current = sesion.doc.nombre !== NOMBRE_SIN_TITULO;
       setGuardadoEn(sesion.doc.actualizado);
 
-      if (!necesitaArchivos(sesion.doc)) {
-        // Sin material que pedir se entra derecho, pero igual hay que aplicar
-        // el documento: ahi vive la salida elegida, que si no se perderia.
-        opcionesRef.current.onRestaurar(await reconstruir(sesion.doc, new Map(), biblioteca));
+      // Con las copias en el almacen no hay nada que pedir y se entra derecho.
+      // Aun sin material hay que aplicar el documento: ahi vive la salida
+      // elegida, que si no se perderia.
+      const archivos = await archivosDelAlmacen(sesion.doc);
+      if (!vivo) return;
+      if (archivos) {
+        opcionesRef.current.onRestaurar(await reconstruir(sesion.doc, archivos, biblioteca));
         ultimoRef.current = sesion.doc;
         setFase('editando');
         return;
@@ -188,7 +228,7 @@ export function useProyecto(opciones: Opciones): Proyecto {
     return () => {
       vivo = false;
     };
-  }, [refrescarLista]);
+  }, [refrescarLista, medirCopias]);
 
   // El autoguardado. Se re-dispara con cada cambio del montaje y espera a que
   // la mano se quede quieta.
@@ -259,8 +299,9 @@ export function useProyecto(opciones: Opciones): Proyecto {
     setGuardadoEn(doc.actualizado);
     ultimoRef.current = null;
     setErrorRestaurar(null);
-    if (!necesitaArchivos(doc)) {
-      opcionesRef.current.onRestaurar(await reconstruir(doc, new Map(), bibliotecaRef.current));
+    const archivos = await archivosDelAlmacen(doc);
+    if (archivos) {
+      opcionesRef.current.onRestaurar(await reconstruir(doc, archivos, bibliotecaRef.current));
       ultimoRef.current = doc;
       setPendiente(null);
       setFase('editando');
@@ -292,9 +333,12 @@ export function useProyecto(opciones: Opciones): Proyecto {
   const borrar = useCallback(
     async (proyectoId: string) => {
       await borrarProyecto(proyectoId);
-      await refrescarLista();
+      // Los clips de un proyecto borrado no los reclama nadie mas, y pueden ser
+      // varios gigas: se van con el.
+      await purgarHuerfanos();
+      await Promise.all([refrescarLista(), medirCopias()]);
     },
-    [refrescarLista],
+    [refrescarLista, medirCopias],
   );
 
   const revincular = useCallback(async (asignados: Map<string, File>) => {
@@ -304,6 +348,9 @@ export function useProyecto(opciones: Opciones): Proyecto {
     setErrorRestaurar(null);
     try {
       const restaurado = await reconstruir(actual.doc, asignados, bibliotecaRef.current);
+      // Que sea la ultima vez: lo que el usuario acaba de buscar a mano queda
+      // copiado adentro de la app.
+      recordarArchivos(asignados);
       opcionesRef.current.onRestaurar(restaurado);
       setPendiente(null);
       setFase('editando');
@@ -313,6 +360,18 @@ export function useProyecto(opciones: Opciones): Proyecto {
       setRestaurando(false);
     }
   }, []);
+
+  const purgar = useCallback(async () => {
+    const liberado = await purgarHuerfanos();
+    await medirCopias();
+    return liberado;
+  }, [medirCopias]);
+
+  const liberarEsteMontaje = useCallback(async () => {
+    const liberado = await liberarMediosDe(serializarProyecto(estadoRef.current));
+    await medirCopias();
+    return liberado;
+  }, [medirCopias]);
 
   return {
     fase,
@@ -328,5 +387,9 @@ export function useProyecto(opciones: Opciones): Proyecto {
     borrar,
     nuevo,
     revincular,
+    pesoCopias,
+    medirCopias: () => void medirCopias(),
+    purgar,
+    liberarEsteMontaje,
   };
 }
