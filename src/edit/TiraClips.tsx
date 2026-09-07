@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { formatDuration } from '../media/probe';
+import { decaer, seFreno, velocidadDe, type Muestra } from './deslizar';
 import {
   desplazamientoDe,
   destinoDelArrastre,
@@ -16,8 +17,8 @@ import { clipOutputDuration, type TimelineClip } from './types';
 const ENGANCHE_MS = 250;
 
 /**
- * Si el dedo se corre mas que esto antes de que enganche, el gesto era scrollear
- * la tira y el enganche se cancela.
+ * Si el dedo se corre mas que esto antes de que enganche, el gesto no era
+ * enganchar: era correr la tira, o scrollear la pagina.
  */
 const TOLERANCIA_PX = 8;
 
@@ -32,6 +33,27 @@ const VELOCIDAD_PX = 10;
 
 /** Lo que dura la bajada del chip a su hueco al soltar. Igual que en el CSS. */
 const BAJADA_MS = 180;
+
+/** El techo del paso de la inercia: una pestana en segundo plano no da un salto. */
+const PASO_MAX_MS = 32;
+
+/**
+ * En que se convirtio el toque que arranco sobre un chip.
+ *
+ * 'espera' es el rato en que todavia puede ser cualquiera de las tres cosas. Se
+ * decide por el primer movimiento que pase la tolerancia, o por el reloj del
+ * enganche si el dedo se queda quieto.
+ */
+type Modo = 'espera' | 'tira' | 'chip';
+
+interface Gesto {
+  indice: number;
+  x0: number;
+  y0: number;
+  /** Donde estaba la tira al empezar: correrla es esto menos lo que fue el dedo. */
+  scroll0: number;
+  modo: Modo;
+}
 
 interface Arrastre {
   desde: number;
@@ -59,9 +81,17 @@ export interface TiraClipsProps {
  * arrastrandolos.
  *
  * El enganche es por toque sostenido y no inmediato porque la tira ya usa el
- * arrastre horizontal para scrollear y el toque corto para elegir clip. Los
+ * arrastre horizontal para correrse y el toque corto para elegir clip. Los
  * botones "mover" de la pestana clip hacen lo mismo de a un lugar, y son la via
  * de teclado.
+ *
+ * Arriba de un chip el gesto horizontal es NUESTRO: el chip lleva
+ * `touch-action: pan-y`, asi que el navegador solo se queda con el vertical -el
+ * de scrollear la pagina- y nunca con el de la tira. Sin eso, con la tira
+ * desbordada el navegador se quedaba con el toque apenas rozaba la pantalla,
+ * mandaba un `pointercancel` y mataba el enganche antes de que llegara a
+ * cumplirse: el arrastre era imposible justo cuando mas clips habia. El precio
+ * es que correr la tira lo hacemos a mano, inercia incluida (ver deslizar.ts).
  */
 export function TiraClips({
   clips,
@@ -79,9 +109,18 @@ export function TiraClips({
   arrastreRef.current = arrastre;
 
   const relojRef = useRef<number | null>(null);
-  const partidaRef = useRef<{ x: number; y: number; indice: number } | null>(null);
+  const gestoRef = useRef<Gesto | null>(null);
   /** El ultimo X del dedo, que el auto-scroll necesita aunque nadie se mueva. */
   const ultimoXRef = useRef(0);
+  /** El rastro del dedo, para saber con cuanto envion se lo levanto. */
+  const muestrasRef = useRef<Muestra[]>([]);
+  const inerciaRef = useRef<number | null>(null);
+  /**
+   * Si el toque termino siendo un gesto y no un toque. El click llega igual
+   * despues del pointerup, y sin esto correr la tira elegiria de paso el chip
+   * que quedo abajo del dedo.
+   */
+  const huboGestoRef = useRef(false);
 
   /** De coordenadas de pantalla a coordenadas de contenido de la tira. */
   const xContenido = useCallback((clientX: number) => {
@@ -95,7 +134,44 @@ export function TiraClips({
       clearTimeout(relojRef.current);
       relojRef.current = null;
     }
-    partidaRef.current = null;
+  }, []);
+
+  const frenarInercia = useCallback(() => {
+    if (inerciaRef.current !== null) {
+      cancelAnimationFrame(inerciaRef.current);
+      inerciaRef.current = null;
+    }
+  }, []);
+
+  /** Al soltar, la tira sigue corriendo y frena sola, como lo haria el navegador. */
+  const lanzarInercia = useCallback(() => {
+    let velocidad = velocidadDe(muestrasRef.current);
+    if (seFreno(velocidad)) return;
+
+    let anterior = performance.now();
+    const paso = (ahora: number) => {
+      const tira = tiraRef.current;
+      if (!tira) {
+        inerciaRef.current = null;
+        return;
+      }
+      const ms = Math.min(PASO_MAX_MS, ahora - anterior);
+      anterior = ahora;
+      const siguiente = decaer(velocidad, ms);
+      velocidad = siguiente.velocidad;
+
+      // El dedo yendo a la derecha destapa lo que hay a la IZQUIERDA, o sea que
+      // el scroll baja: por eso se resta.
+      const antes = tira.scrollLeft;
+      tira.scrollLeft = antes - siguiente.avance;
+      // Contra el tope el scroll no se movio y no hay nada mas que hacer.
+      if (seFreno(velocidad) || tira.scrollLeft === antes) {
+        inerciaRef.current = null;
+        return;
+      }
+      inerciaRef.current = requestAnimationFrame(paso);
+    };
+    inerciaRef.current = requestAnimationFrame(paso);
   }, []);
 
   const recalcular = useCallback(
@@ -136,8 +212,7 @@ export function TiraClips({
     [clips.length, xContenido],
   );
 
-  const soltar = useCallback(() => {
-    cancelarEnganche();
+  const soltarChip = useCallback(() => {
     const a = arrastreRef.current;
     if (!a || a.bajando) return;
 
@@ -153,13 +228,93 @@ export function TiraClips({
       onReordenar(a.desde, a.destino);
       setArrastre(null);
     }, BAJADA_MS);
-  }, [cancelarEnganche, onReordenar]);
+  }, [onReordenar]);
+
+  const empezar = useCallback(
+    (indice: number, e: React.PointerEvent<HTMLButtonElement>) => {
+      frenarInercia();
+      cancelarEnganche();
+      huboGestoRef.current = false;
+
+      gestoRef.current = {
+        indice,
+        x0: e.clientX,
+        y0: e.clientY,
+        scroll0: tiraRef.current?.scrollLeft ?? 0,
+        modo: 'espera',
+      };
+      muestrasRef.current = [{ x: e.clientX, t: e.timeStamp }];
+
+      // El toque es del chip desde el arranque: sin esto, correr la tira se
+      // cortaria apenas el dedo pasa por encima del chip de al lado.
+      e.currentTarget.setPointerCapture(e.pointerId);
+
+      if (deshabilitado || clips.length < 2) return;
+      relojRef.current = window.setTimeout(() => {
+        relojRef.current = null;
+        const g = gestoRef.current;
+        if (!g || g.modo !== 'espera') return;
+        g.modo = 'chip';
+        huboGestoRef.current = true;
+        enganchar(g.indice, g.x0);
+      }, ENGANCHE_MS);
+    },
+    [cancelarEnganche, clips.length, deshabilitado, enganchar, frenarInercia],
+  );
+
+  const mover = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      const g = gestoRef.current;
+      if (!g) return;
+      muestrasRef.current.push({ x: e.clientX, t: e.timeStamp });
+
+      if (g.modo === 'espera') {
+        const dx = e.clientX - g.x0;
+        const dy = e.clientY - g.y0;
+        if (Math.abs(dx) > TOLERANCIA_PX && Math.abs(dx) >= Math.abs(dy)) {
+          // Se fue para el costado: el gesto era correr la tira.
+          cancelarEnganche();
+          g.modo = 'tira';
+          huboGestoRef.current = true;
+        } else if (Math.abs(dy) > TOLERANCIA_PX) {
+          // Se fue para arriba o para abajo: eso es el scroll de la pagina, que
+          // el navegador se lleva solo. Nosotros nos borramos del gesto.
+          cancelarEnganche();
+          gestoRef.current = null;
+          return;
+        } else {
+          return;
+        }
+      }
+
+      if (g.modo === 'tira') {
+        const tira = tiraRef.current;
+        if (tira) tira.scrollLeft = g.scroll0 - (e.clientX - g.x0);
+        return;
+      }
+
+      ultimoXRef.current = e.clientX;
+      recalcular(e.clientX);
+    },
+    [cancelarEnganche, recalcular],
+  );
+
+  const terminar = useCallback(() => {
+    cancelarEnganche();
+    const g = gestoRef.current;
+    gestoRef.current = null;
+    if (g?.modo === 'tira') lanzarInercia();
+    else if (g?.modo === 'chip') soltarChip();
+  }, [cancelarEnganche, lanzarInercia, soltarChip]);
 
   /**
-   * Con un arrastre en curso el dedo es del chip, no de la tira. `touch-action`
-   * no alcanza: en iOS el navegador ya decidio que el gesto era un pan cuando el
-   * enganche recien esta empezando, y solo un preventDefault sobre el touchmove
-   * -que React no deja registrar, porque sus listeners son pasivos- lo frena.
+   * Con un chip enganchado el dedo es del chip y de nadie mas. `pan-y` sigue
+   * dejandole al navegador el gesto vertical, y un arrastre que arranca de
+   * costado pero se va para abajo terminaria scrolleando la pagina y matando el
+   * enganche. Aca si el preventDefault funciona: el enganche pide 250ms de dedo
+   * quieto, asi que cuando llega el primer movimiento el navegador todavia no
+   * decidio nada. Va sobre el nodo porque React registra sus listeners como
+   * pasivos y desde uno pasivo no se puede frenar nada.
    */
   useEffect(() => {
     const tira = tiraRef.current;
@@ -200,8 +355,14 @@ export function TiraClips({
     return () => cancelAnimationFrame(cuadro);
   }, [arrastrando, recalcular]);
 
-  // Desmontarse a mitad de un arrastre no debe dejar el reloj corriendo.
-  useEffect(() => cancelarEnganche, [cancelarEnganche]);
+  // Desmontarse a mitad de un gesto no debe dejar nada corriendo.
+  useEffect(
+    () => () => {
+      cancelarEnganche();
+      frenarInercia();
+    },
+    [cancelarEnganche, frenarInercia],
+  );
 
   if (clips.length === 0) return null;
 
@@ -232,38 +393,20 @@ export function TiraClips({
             style={dx !== 0 ? { transform: `translateX(${dx}px)` } : undefined}
             aria-pressed={c.id === selectedId}
             title={`${c.info.name} · ${formatDuration(clipOutputDuration(c))}`}
-            onClick={() => onSelect(c.id)}
-            onPointerDown={(e) => {
-              if (deshabilitado || clips.length < 2) return;
-              partidaRef.current = { x: e.clientX, y: e.clientY, indice: i };
-              const chip = e.currentTarget;
-              const pointerId = e.pointerId;
-              relojRef.current = window.setTimeout(() => {
-                relojRef.current = null;
-                const p = partidaRef.current;
-                if (!p) return;
-                chip.setPointerCapture(pointerId);
-                enganchar(p.indice, p.x);
-              }, ENGANCHE_MS);
-            }}
-            onPointerMove={(e) => {
-              const p = partidaRef.current;
-              if (relojRef.current !== null && p) {
-                // Todavia no engancho: si el dedo se corrio, era un scroll.
-                if (
-                  Math.abs(e.clientX - p.x) > TOLERANCIA_PX ||
-                  Math.abs(e.clientY - p.y) > TOLERANCIA_PX
-                ) {
-                  cancelarEnganche();
-                }
+            onClick={() => {
+              // Correr la tira o arrastrar un chip no es elegirlo. Hay que
+              // descartar ese click a mano: el navegador ya no lo hace por
+              // nosotros, porque el gesto horizontal no lo maneja el.
+              if (huboGestoRef.current) {
+                huboGestoRef.current = false;
                 return;
               }
-              if (!arrastreRef.current) return;
-              ultimoXRef.current = e.clientX;
-              recalcular(e.clientX);
+              onSelect(c.id);
             }}
-            onPointerUp={soltar}
-            onPointerCancel={soltar}
+            onPointerDown={(e) => empezar(i, e)}
+            onPointerMove={mover}
+            onPointerUp={terminar}
+            onPointerCancel={terminar}
             onContextMenu={(e) => e.preventDefault()}
           >
             {String(i + 1).padStart(2, '0')}
