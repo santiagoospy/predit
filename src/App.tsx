@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { decodeAudioRange } from './audio/decode';
 import { clipAportaAudio } from './audio/mix';
@@ -91,7 +91,31 @@ const PESTANAS = [
 type Pestana = (typeof PESTANAS)[number]['id'];
 
 export function App() {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  /*
+   * DOS <video> y no uno.
+   *
+   * Con uno solo, encadenar clips obligaba a cambiarle el `src`: el navegador
+   * tira el decodificador, abre el archivo nuevo, parsea el contenedor y busca
+   * un keyframe. Eso es un hueco de imagen en CADA corte, y como la musica va
+   * por WebAudio y no se entera, el tiron se notaba todavia mas.
+   *
+   * Ahora hay dos y se turnan: mientras suena uno, el otro ya cargo el clip
+   * siguiente y quedo parado en su marca de entrada. El corte es un cambio de
+   * cual se dibuja, sin carga ni busqueda.
+   */
+  const videoARef = useRef<HTMLVideoElement>(null);
+  const videoBRef = useRef<HTMLVideoElement>(null);
+  const [activo, setActivo] = useState<'a' | 'b'>('a');
+  /** Lo mismo que `activo`, para leerlo desde los callbacks sin recrearlos. */
+  const activoRef = useRef<'a' | 'b'>('a');
+  /**
+   * El <video> que esta en pantalla. No es el ref de un elemento del JSX: lo
+   * apunta el efecto de abajo al que toque. Todo el resto del componente lo usa
+   * como antes, sin enterarse de que hay dos.
+   */
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  /** El clip que ya quedo cargado y buscado en el <video> ocioso, si hay. */
+  const listoRef = useRef<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   /** La zona que scrollea: hay que devolverla arriba al cambiar de pestana. */
   const cuerpoRef = useRef<HTMLDivElement>(null);
@@ -133,6 +157,25 @@ export function App() {
   const capaRef = useRef<OverlayLayer | null>(null);
   /** El bucle de dibujo necesita saber en que segundo del montaje esta parado. */
   const lineaRef = useRef({ offset: 0, trimIn: 0, speed: 1 });
+
+  /*
+   * Quien es el video de pantalla y quien el de reserva.
+   *
+   * Va en useLayoutEffect y no en useEffect a proposito: los de layout corren
+   * ANTES que todos los useEffect, asi que cuando el bucle de dibujo o el salto
+   * de clip leen `videoRef.current`, ya apunta al que corresponde. Sin dependencias
+   * porque tiene que revisarse en cada render, incluido el primer montaje.
+   */
+  useLayoutEffect(() => {
+    activoRef.current = activo;
+    videoRef.current = activo === 'a' ? videoARef.current : videoBRef.current;
+  });
+
+  /** El <video> de reserva: el que no se esta viendo. */
+  const videoOcioso = useCallback(
+    () => (activoRef.current === 'a' ? videoBRef.current : videoARef.current),
+    [],
+  );
   /**
    * Un segundo puntual DENTRO del clip al que estamos saltando. Lo deja puesto
    * un salto desde la barra de la capa, que habla en tiempo de linea de tiempo
@@ -491,21 +534,119 @@ export function App() {
     // no, se cae en la marca de entrada del clip, que es lo de siempre.
     const target = saltoRef.current ?? selected.trimIn;
     saltoRef.current = null;
-    const apply = () => {
-      video.currentTime = target;
-      setCurrentTime(target);
+
+    // El camino rapido de la cadena: este <video> ya venia con el clip cargado
+    // y parado en su marca, y `avanzarOTerminar` ya le dio play. Volver a
+    // cargarlo o a buscarlo seria pedir el trabajo que se acaba de ahorrar,
+    // justo en el cuadro del corte.
+    const yaCargado = video.dataset.clipId === selected.id && video.dataset.clipUrl === selected.url;
+    if (enCadena && yaCargado) {
+      setCurrentTime(video.currentTime);
+      return undefined;
+    }
+
+    const hayQueCargar = !yaCargado;
+    if (hayQueCargar) {
+      video.dataset.clipId = selected.id;
+      video.dataset.clipUrl = selected.url;
+      video.src = selected.url;
+    }
+
+    // Se espera `seeked` y no `loadedmetadata` para arrancar. Con metadata hay
+    // duracion y tamano pero todavia NINGUN cuadro decodificado: el play caia
+    // en `waiting` y el bucle de dibujo descartaba cuadros por readyState < 2,
+    // o sea imagen congelada. Con `seeked` hay cuadro en el instante exacto.
+    const arrancar = () => {
+      setCurrentTime(video.currentTime);
       if (enCadena) {
         void video.play();
         setPlaying(true);
       }
     };
-    if (video.readyState >= 1) {
-      apply();
+    const buscar = () => {
+      if (Math.abs(video.currentTime - target) < 1e-3) {
+        arrancar();
+        return;
+      }
+      video.addEventListener('seeked', arrancar, { once: true });
+      video.currentTime = target;
+      setCurrentTime(target);
+    };
+    if (hayQueCargar || video.readyState < 1) {
+      video.addEventListener('loadedmetadata', buscar, { once: true });
+    } else {
+      buscar();
+    }
+    return () => {
+      video.removeEventListener('loadedmetadata', buscar);
+      video.removeEventListener('seeked', arrancar);
+    };
+  }, [selectedId]);
+
+  /*
+   * Precarga del clip siguiente en el <video> de reserva.
+   *
+   * Solo con la cadena corriendo: fuera de ahi no se sabe cual va a ser el
+   * proximo clip, y dos decodificadores vivos ocupan memoria de mas (en el
+   * iPhone es lo que mas importa). Por eso, apenas la cadena se apaga, se le
+   * suelta el archivo al de reserva.
+   */
+  useEffect(() => {
+    const reserva = videoOcioso();
+    if (!reserva) return undefined;
+
+    const idx = clips.findIndex((c) => c.id === selectedId);
+    const siguiente = todo && playing && idx >= 0 ? clips[idx + 1] : undefined;
+
+    if (!siguiente) {
+      if (reserva.dataset.clipId) {
+        reserva.removeAttribute('src');
+        delete reserva.dataset.clipId;
+        delete reserva.dataset.clipUrl;
+        reserva.load();
+      }
+      listoRef.current = null;
       return undefined;
     }
-    video.addEventListener('loadedmetadata', apply, { once: true });
-    return () => video.removeEventListener('loadedmetadata', apply);
-  }, [selectedId]);
+
+    if (reserva.dataset.clipId === siguiente.id && reserva.dataset.clipUrl === siguiente.url)
+      return undefined;
+
+    listoRef.current = null;
+    reserva.dataset.clipId = siguiente.id;
+    reserva.dataset.clipUrl = siguiente.url;
+    reserva.muted = true;
+    reserva.preload = 'auto';
+    reserva.src = siguiente.url;
+
+    const marcarListo = () => {
+      listoRef.current = siguiente.id;
+    };
+    const buscar = () => {
+      // La velocidad se fija ACA, antes del cambio. Al cargar un archivo nuevo
+      // el navegador vuelve a 1x, y sin esto el clip precargado arrancaba a
+      // velocidad normal aunque fuera camara lenta.
+      try {
+        const rate = Math.min(4, Math.max(0.25, siguiente.speed));
+        reserva.defaultPlaybackRate = rate;
+        reserva.playbackRate = rate;
+      } catch {
+        // Si la rechaza, ese clip se ve a velocidad normal, como antes.
+      }
+      if (Math.abs(reserva.currentTime - siguiente.trimIn) < 1e-3) {
+        marcarListo();
+        return;
+      }
+      reserva.addEventListener('seeked', marcarListo, { once: true });
+      reserva.currentTime = siguiente.trimIn;
+    };
+    reserva.addEventListener('loadedmetadata', buscar, { once: true });
+
+    return () => {
+      reserva.removeEventListener('loadedmetadata', buscar);
+      reserva.removeEventListener('seeked', marcarListo);
+    };
+  }, [todo, playing, selectedId, clips, activo, videoOcioso]);
 
   /**
    * En el iPhone y el iPad `video.volume` es de solo lectura: la asignacion se
@@ -539,7 +680,9 @@ export function App() {
     } catch {
       // Si la rechaza, el visor sigue a velocidad normal.
     }
-  }, [usaSuAudio, volume, speed, selectedId]);
+    // `activo` en las deps: al cambiar de <video> hay que reponerle el volumen y
+    // la velocidad al que entra, que venia mudo de la precarga.
+  }, [usaSuAudio, volume, speed, selectedId, activo]);
 
   // El volumen de la musica se puede mover mientras suena.
   useEffect(() => {
@@ -752,7 +895,9 @@ export function App() {
       if (conVfc && handleVfc) video.cancelVideoFrameCallback(handleVfc);
       tiempoCuadroRef.current = null;
     };
-  }, [selected, previewSize]);
+    // `activo` en las deps: el bucle tiene que redibujar y anotar los cuadros
+    // del <video> que acaba de entrar, no los del que quedo de reserva.
+  }, [selected, previewSize, activo]);
 
   /**
    * Que hacer cuando el clip llega a su marca de salida. Con la cadena prendida
@@ -770,8 +915,22 @@ export function App() {
       const idx = clips.findIndex((c) => c.id === selectedId);
       const siguiente = clips[idx + 1];
       if (siguiente) {
-        video.pause();
         avanceRef.current = true;
+        const reserva = videoOcioso();
+        // El corte sin hueco: la reserva ya tiene el archivo abierto y esta
+        // parada en la marca de entrada, asi que esto es solo cambiar cual se
+        // dibuja. Si la precarga no llego a tiempo -clip cortito, disco lento-
+        // se cae al camino de siempre, que carga en el efecto de seleccion.
+        if (reserva && listoRef.current === siguiente.id) {
+          reserva.muted = video.muted;
+          reserva.volume = video.volume;
+          video.pause();
+          void reserva.play();
+          listoRef.current = null;
+          setActivo((a) => (a === 'a' ? 'b' : 'a'));
+        } else {
+          video.pause();
+        }
         // `playing` queda en true a proposito: asi este mismo efecto se
         // re-suscribe con las marcas del clip nuevo y no se corta la cadena.
         setSelectedId(siguiente.id);
@@ -786,18 +945,42 @@ export function App() {
     video.currentTime = trimIn;
     setPlaying(false);
     detenerMusica();
-  }, [clips, selectedId, trimIn, detenerMusica]);
+  }, [clips, selectedId, trimIn, detenerMusica, videoOcioso]);
 
-  // Al reproducir, frena en la marca de salida en vez de seguir hasta el final.
+  /*
+   * Al reproducir, frena en la marca de salida en vez de seguir hasta el final.
+   *
+   * Se mira cuadro a cuadro con requestVideoFrameCallback. Antes era un
+   * setInterval de 60 ms, o sea que el corte podia llegar hasta dos cuadros
+   * tarde; con el cambio de clip ya instantaneo, ese retraso pasaba a ser lo
+   * mas visible que quedaba. El intervalo sigue de red por si el navegador no
+   * tiene rVFC, y porque rVFC no dispara con el video pausado.
+   */
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !playing) return;
+    let corto = false;
     const check = () => {
-      if (video.currentTime >= trimOut) avanzarOTerminar();
+      if (corto) return;
+      if (video.currentTime >= trimOut) {
+        corto = true;
+        avanzarOTerminar();
+      }
     };
     const id = setInterval(check, 60);
-    return () => clearInterval(id);
-  }, [playing, trimOut, avanzarOTerminar]);
+    let handle = 0;
+    const conVfc = 'requestVideoFrameCallback' in video;
+    const porCuadro = () => {
+      check();
+      if (!corto) handle = video.requestVideoFrameCallback(porCuadro);
+    };
+    if (conVfc) handle = video.requestVideoFrameCallback(porCuadro);
+    return () => {
+      corto = true;
+      clearInterval(id);
+      if (conVfc && handle) video.cancelVideoFrameCallback(handle);
+    };
+  }, [playing, trimOut, avanzarOTerminar, activo]);
 
   const seek = useCallback(
     (seconds: number) => {
@@ -1134,6 +1317,16 @@ export function App() {
    * varias veces sin esto va dejando cada montaje viejo ocupando memoria.
    */
   const soltarMaterial = useCallback(() => {
+    // Primero se les saca el archivo a los dos <video>: revocar una URL que un
+    // elemento todavia tiene abierta deja el decodificador colgado del blob.
+    for (const v of [videoARef.current, videoBRef.current]) {
+      if (!v?.dataset.clipId) continue;
+      v.removeAttribute('src');
+      delete v.dataset.clipId;
+      delete v.dataset.clipUrl;
+      v.load();
+    }
+    listoRef.current = null;
     for (const c of clipsRef.current) URL.revokeObjectURL(c.url);
     capaRef.current?.bitmap.close();
   }, []);
@@ -1472,13 +1665,10 @@ export function App() {
             <small>Hola, edita chill, sin presion</small>
           </div>
         )}
-        <video
-          ref={videoRef}
-          src={selected?.url}
-          className="video-oculto"
-          playsInline
-          onEnded={avanzarOTerminar}
-        />
+        {/* Los dos del doble bufer. El `src` no lo pone React: quien carga que
+            depende de por donde va la cadena, no del render. */}
+        <video ref={videoARef} className="video-oculto" playsInline onEnded={avanzarOTerminar} />
+        <video ref={videoBRef} className="video-oculto" playsInline onEnded={avanzarOTerminar} />
       </main>
 
       {/* La tira quedo en lo minimo: el numero de cada clip y nada mas. Con la
