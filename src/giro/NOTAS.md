@@ -4,7 +4,7 @@ Documento de traspaso. Lo que sigue es lo que costó averiguar, no lo que se lee
 en el código: los formatos de cámara, las convenciones, y sobre todo los ocho
 bugs que ya se encontraron, con su síntoma, para no volver a caer en ellos.
 
-Estado al 2026-09-07 (después de `f51e6ba`, sin commitear). 280 tests en verde.
+Estado al 2026-09-08 (después de `10e8cd4`, sin commitear). 300 tests en verde.
 
 ---
 
@@ -28,7 +28,11 @@ Estado al 2026-09-07 (después de `f51e6ba`, sin commitear). 280 tests en verde.
 - **Guardar los ajustes en el proyecto.** Hoy viven en el estado de `PanelGiro`
   y se pierden al cambiar de pestaña o cerrar. Van en `ClipDoc` (`esquema.ts`).
 - **Aplicarlo al exportar.** Hoy es solo preview; `exporter.ts` no sabe nada.
-- **Enderezar el horizonte de GoPro** (la curvatura del ojo de pez).
+- **Cargar un `.gyroflow` cualquiera desde la app.** Hoy el perfil de lente
+  está embebido (`lente.ts`) y se elige por marca y aspecto; el parser
+  `perfilDesdeGyroflow` ya existe, falta el botón.
+- **Nivelar el horizonte de GoPro** con `GRAV` (la curvatura ya se endereza
+  con el perfil de lente, ver abajo).
 
 ---
 
@@ -44,14 +48,17 @@ Todo en `src/giro/`:
 | `leer.ts` | Elige el parser por el formato de la pista (`rtmd` / `gpmd`). |
 | `tipos.ts` | `MuestraGiro`, `DatosGiro`, `Optica`, `ModeloRadial`. |
 | `quat.ts` | Cuaterniones. |
-| `estabilizar.ts` | Integrar → suavizar → corregir → recortar. El núcleo. |
+| `lente.ts` | El modelo de ojo de pez (OpenCV/Gyroflow): perfil, proyección, inversa, y el perfil embebido de la GoPro 8:7. |
+| `estabilizar.ts` | Integrar → suavizar → corregir → recortar. El núcleo. Con lente, el muestreo pasa por `lente.ts`. |
 | `Curvas.tsx` | Las tres curvas en un canvas. |
 | `PanelGiro.tsx` | Dueño de todo el camino: lee, arma la corrección y se la pasa al visor. |
 
-Fuera de `giro/`: el warp vive en `color/shader.ts` (uniforms `uEstab` /
-`uHayEstab`, en el **fragment**, deformando el muestreo) y `color/renderer.ts`
-(`setEstabilizacion`). `App.tsx` guarda la corrección en `estabRef` y pide la
-matriz por cuadro en el bucle de dibujo.
+Fuera de `giro/`: el warp vive en `color/shader.ts` (en el **fragment**,
+deformando el muestreo: `uEstab`/`uHayEstab` para la homografía, y
+`uHayLente` + `uLente*` para la cadena con ojo de pez) y `color/renderer.ts`
+(`setEstabilizacion` recibe un `Muestreo`, que es una de las dos formas).
+`App.tsx` guarda la corrección en `estabRef` y pide `muestreoEn` por cuadro en
+el bucle de dibujo.
 
 ---
 
@@ -149,7 +156,7 @@ código y anotarlo acá.
 
 ---
 
-## Los ocho bugs que ya se encontraron
+## Los nueve bugs que ya se encontraron
 
 Cada uno tenía un síntoma en pantalla distinto. Vale la pena conocerlos porque
 los síntomas se repiten.
@@ -341,6 +348,124 @@ Lo que salió, sobre el tramo 20–35 s de GX010389 (incluye un giro de 170°):
 3. **Obturador rodante.** No modelado. Gyroflow tiene `frame_readout_time`
    (en este perfil no está seteado, así que probablemente pese poco).
 
+### El modelo de ojo de pez (2026-09-08)
+
+Hecho. `lente.ts` implementa el modelo de OpenCV (`cv::fisheye`, el de los
+perfiles de Gyroflow): `theta_d = theta·(1 + k1θ² + k2θ⁴ + k3θ⁶ + k4θ⁸)`, y la
+inversa por Newton. El perfil de `GX010389.gyroflow` está embebido
+(`PERFIL_GOPRO_WIDE_8_7`) y se elige solo cuando el clip es GoPro en 3840×3360;
+un 16:9 de la misma cámara es otro lente y NO lo usa. Con lente, la cadena es
+píxel de salida → rayo → rotar → proyectar con el modelo → píxel de entrada,
+igual en `estabilizar.ts` (`muestreoConLente`, la referencia) y en el shader.
+
+Dos modos, casilla «enderezar» en el panel (`Opciones.rectificar`):
+
+- **Sin enderezar (defecto):** la salida es el mismo ojo de pez, con la focal
+  escalada por el zoom. No pierde encuadre; el horizonte sigue curvo.
+- **Enderezado:** salida rectilínea a la focal del perfil (1704 px). Lo que
+  hace Gyroflow con «fov 1». **Recorta ~30%**: la esquina de la salida cae en
+  el píxel (606, 514) de la entrada y el borde horizontal en 3412. Es física:
+  una imagen rectilínea de la misma focal abarca menos campo que el ojo de pez.
+  Por eso no es el defecto.
+
+Lo que midió el banco (`_verificar.test.ts`, ahora con `LENTE=no,si,fish` y
+`FRANJAS=1` para medir el tercio izquierdo, el centro y el derecho por
+separado), tramo 20–35 s, suavidad 1, referencia 15, desfase +10 ms:
+
+| | temblor residual izq / centro / der (px) | zoom |
+|---|---|---|
+| sin estabilizar | 1.43 / 1.30 / 1.44 | — |
+| agujero de alfiler, f=1500 | 1.09 / 0.72 / 0.99 | 1.14 |
+| ojo de pez, sin enderezar | 0.87 / 0.73 / 0.85 | 1.07 |
+
+O sea: el centro ya estaba bien; **los bordes mejoran un 15–20% y el recorte
+baja a la mitad.** El balanceo lento (3–7 px/cuadro) NO cambia con el
+lente: es la hipótesis 2 (traslación/paralaje), que ningún giroscopio ve.
+
+Ojo con la medición enderezada: las franjas de una salida rectificada NO son
+los bordes del ojo de pez (el borde de la salida cae al 77% del radio de la
+entrada) y encima la rectificación estira la periferia, así que sus números no
+se comparan con los otros dos. Para validar el modelo hay que medir sin
+enderezar.
+
+Detalle de implementación: con lente, `esquinasDentro` muestrea 12 puntos por
+lado (el borde cae como curva y con roll el extremo no es la esquina). Y una
+propiedad que ya existía: el zoom se decide en instantes cada 0.04 s, y un
+cuadro entre dos muestras puede pasarse un par de píxeles del borde (se vio
+en un test con temblor sintético fuerte: 2 px en 3360). En material real no
+se notó; si aparece, es un margen chico en `zoomNecesario`.
+
+### 9. El panel se desmonta al cambiar de pestana → «el export sale sin estabilizar»
+
+`PanelGiro` solo se monta con `pestana === 'clip'`, y tenia un efecto de
+limpieza que mandaba `onEstabilizacion(null)` al desmontar. Ir a la pestana
+**salida** para exportar lo desmontaba: la correccion se borraba justo antes
+de apretar el boton, y el MP4 salia sin estabilizar. En pantalla parecia que
+el export "ignoraba" la estabilizacion.
+
+El cleanup estaba por una razon buena (no aplicarle la correccion de un clip a
+otro), pero desmontar por cambio de pestana no es cambiar de clip. El arreglo
+es que la correccion viaje con su `clipId` (`estabRef` en `App.tsx`) y que el
+visor y el export comprueben que coincide con el clip que estan dibujando. El
+cleanup de desmontaje se saco.
+
+Queda un borde conocido: cambiar el recorte del clip desde otra pestana deja
+la correccion calculada con el rango viejo hasta volver a *clip*. Se va cuando
+los ajustes vivan en `ClipDoc`.
+
+### El barrido de suavidad y referencia (2026-09-08)
+
+Con el modelo de lente puesto, se barrio suavidad x velocidad de referencia
+sobre el mismo tramo, midiendo el temblor rapido y el **balanceo** (lo que
+queda entre 0.5 s y 3 s de periodo, que es lo que se ve moverse). Sin
+estabilizar: temblor dx 1.3, balanceo dx 7.3.
+
+| suavidad | ref 0 | ref 15 | ref 50 |
+|---|---|---|---|
+| 0.3 s | **bal 5.8** · zoom 1.10 · gan 1.00 | bal 7.1 · zoom 1.02 | bal 6.8 · zoom 1.06 |
+| 1 s | bal 4.9 · zoom 1.30 · **gan min 0.56** | bal 7.1 · zoom 1.07 · gan 1.00 | bal 6.1 · zoom 1.27 · gan 1.00 |
+| 2 s | bal 5.5 · **gan min 0.31** | bal 7.3 · zoom 1.13 | bal 5.8 · **gan min 0.52** |
+| 4 s | bal 6.4 · **gan min 0.19** | bal 7.9 · zoom 1.30 | bal 6.6 · **gan min 0.27** |
+
+Dos cosas, y la primera es contraintuitiva:
+
+1. **La referencia de 15 °/s es el PEOR ajuste para el balanceo, en todas las
+   suavidades.** El balanceo de caminar tiene mas de 15 °/s de velocidad
+   angular, asi que el suavizado adaptativo lo toma por paneo y lo *sigue* en
+   vez de sacarlo. Se habia elegido 15 para que la ganancia no colapsara en el
+   giro de 170°, y cumple eso, pero el precio es justo lo que se ve moverse.
+2. **Con suavidad corta el adaptativo no hace falta.** Suavidad 0.3 s con
+   referencia 0 domina al defecto actual en todo a la vez: mejor temblor (0.4
+   contra 0.7), mejor balanceo (5.8 contra 7.1), ganancia completa y casi el
+   mismo recorte (1.10 contra 1.07). El adaptativo esta compensando una
+   suavidad demasiado larga.
+
+Los defectos del panel siguen en suavidad 1 y `VELOCIDAD_DE_PANEO` 15 (no se
+cambiaron sin probarlo en material variado). Para caminar, el ajuste medido es
+**suavidad 0.3**. Si se confirma en mas clips, el defecto deberia bajar.
+
+Y lo que ningun ajuste arregla: el balanceo no baja de ~5 px/cuadro. Es la
+hipotesis 2, la traslacion: caminar mueve la camara ademas de girarla, y la
+paralaje sobre lo cercano no esta en el giroscopio.
+
+### Aplicado al export (2026-09-08)
+
+`ExportClip.estabilizacion` lleva la correccion al MP4 (`exporter.ts`). Dos
+cosas que conviene saber:
+
+- **El instante es exacto.** En el export se usa `sample.timestamp`, el tiempo
+  del cuadro decodificado. No existe el problema del visor (bug 8): no hay
+  reloj de reproduccion de por medio. Si en el visor hace falta +10 ms de
+  desfase y en el export no, es por esto.
+- **Solo se estabiliza el clip que el panel tenia abierto.** Los ajustes
+  todavia no se guardan por clip (van a `ClipDoc`), asi que vive uno solo por
+  vez; `App.tsx` lo guarda con su `clipId` y el export lo aplica solo a ese.
+  Con mas de un clip en la linea, avisa.
+- **Con rotacion != 0 se apaga y avisa.** La correccion esta en el marco de la
+  imagen mostrada y el shader la aplica sobre el UV de la textura; WebCodecs
+  entrega el cuadro SIN rotar, asi que con rotacion entrarian girados uno
+  respecto del otro. GoPro y Sony en horizontal son rotacion 0.
+
 **Plan B si sigue sin salir:** GoPro escribe `CORI`, la orientación ya integrada
 y fusionada por la cámara. Usarla en vez de integrar el giroscopio saltea todo
 el problema de ejes y además no acumula deriva. `GRAV` (gravedad) permitiría
@@ -352,12 +477,8 @@ además nivelar el horizonte.
 
 **Actualización:** los pasos 3 y 4 ya existen en versión offline
 (`_calibrar.test.ts`, `_verificar.test.ts`) y dieron su veredicto: ejes,
-signo y reloj están bien. Antes de portarlos a la app conviene atacar la
-**distorsión de lente** (hipótesis 1 de arriba): leer los coeficientes de un
-perfil de Gyroflow (o los `POLY`/`ZMPL` del archivo cuando la cámara los
-escribe) y hacer el muestreo del shader con el modelo de ojo de pez:
-salida rectificada → rayo → rotar → proyectar con el modelo de la lente →
-píxel de entrada.
+signo y reloj están bien. La **distorsión de lente** (hipótesis 1) ya está
+hecha (sección anterior). Queda portar la calibración a la app.
 
 Acordado el 2026-09-07. La idea: **dejar de adivinar**. El propio clip dice
 cómo se mueve la imagen, y con eso se fijan ejes, signos, focal y desfase de
@@ -403,7 +524,8 @@ Los números del panel y qué detecta cada uno:
 | frecuencia medida | 200–2000 Hz. Si da ~25, se lee una medición por cuadro y se pierde el resto. |
 | abarca | Tiene que dar casi igual a la duración del clip. |
 | pico ±°/s (en la curva) | A mano difícilmente pase de 200 en Sony. ~500 en GoPro caminando. Si da 30000, falta aplicar la escala. |
-| focal | De dónde salió: *de la cámara*, *a mano* o *del campo a ojo*. |
+| perfil de lente | El perfil embebido que corresponde al formato, o «ninguno». Sin perfil no hay casillas de lente y se usa el agujero de alfiler. |
+| focal | De dónde salió: *del perfil*, *de la cámara*, *a mano* o *del campo a ojo*. |
 | ejes declarados | La cadena como la armaría Gyroflow (`MTRX` u `ORIN`+`ORIO`), o «XYZ como Gyroflow» si la cámara no la escribe completa. |
 | entero en el X% del clip | Qué parte del clip se corrige (casi) completa. Bajo = hay golpes o paneos que piden más que el tope. |
 | ahora: pitch · yaw · roll · ganancia | La corrección en el cabezal. Tienen que moverse con el temblor. |

@@ -2,6 +2,7 @@ import type { Lut3D } from './cube';
 import { GRADE_NEUTRO, type Grade } from './grade';
 import { createLutTexture } from './lutTexture';
 import { FRAGMENT_SHADER, VERTEX_SHADER } from './shader';
+import type { Muestreo } from '../giro/estabilizar';
 
 export type LutSlot = 'conv' | 'look';
 export type FitMode = 'cover' | 'contain';
@@ -69,7 +70,7 @@ export class LutRenderer {
   /** Si ya se subio una imagen de capa. Sin esto, drawOverlay dibujaria basura. */
   private hayOverlay = false;
   /** La correccion del cuadro que se esta por dibujar, o null si no hay. */
-  private estabilizacion: number[] | null = null;
+  private estabilizacion: Muestreo | null = null;
   private disposed = false;
 
   constructor(private readonly canvas: HTMLCanvasElement | OffscreenCanvas) {
@@ -95,6 +96,7 @@ export class LutRenderer {
       'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook',
       'uLift', 'uGamma', 'uGain',
       'uEstab', 'uHayEstab',
+      'uHayLente', 'uLenteF', 'uLenteC', 'uLenteK', 'uFocalSalida', 'uRectificar', 'uTamano',
     ];
     for (const name of uniformNames) {
       this.loc[name] = gl.getUniformLocation(this.program, name);
@@ -162,12 +164,14 @@ export class LutRenderer {
    * tiempo: es la diferencia entre donde apuntaba la camara y donde deberia
    * haber apuntado, y eso es distinto en cada instante.
    *
-   * La matriz llega en orden por filas, que es como la arma la matematica; la
-   * GPU la espera por columnas, asi que se transpone al subirla.
+   * Llega en una de dos formas (ver Muestreo): una homografia en UV, o la
+   * rotacion mas el modelo del lente. Las matrices vienen en orden por filas,
+   * que es como las arma la matematica; la GPU las espera por columnas, asi
+   * que se transponen al subirlas.
    */
-  setEstabilizacion(matriz: number[] | null): void {
+  setEstabilizacion(muestreo: Muestreo | null): void {
     this.assertAlive();
-    this.estabilizacion = matriz;
+    this.estabilizacion = muestreo;
   }
 
   resize(width: number, height: number): void {
@@ -324,13 +328,24 @@ export class LutRenderer {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  private bindEstabilizacion(matriz: number[] | null): void {
+  private bindEstabilizacion(muestreo: Muestreo | null): void {
     const gl = this.gl;
-    gl.uniform1i(this.loc['uHayEstab']!, matriz ? 1 : 0);
-    if (matriz) {
+    gl.uniform1i(this.loc['uHayEstab']!, muestreo?.tipo === 'matriz' ? 1 : 0);
+    gl.uniform1i(this.loc['uHayLente']!, muestreo?.tipo === 'lente' ? 1 : 0);
+    if (!muestreo) return;
+    if (muestreo.tipo === 'matriz') {
       // true en el tercer argumento: transponer de filas a columnas.
-      gl.uniformMatrix3fv(this.loc['uEstab']!, true, matriz);
+      gl.uniformMatrix3fv(this.loc['uEstab']!, true, muestreo.uv);
+      return;
     }
+    const { lente } = muestreo;
+    gl.uniformMatrix3fv(this.loc['uEstab']!, true, muestreo.rotacion);
+    gl.uniform2f(this.loc['uLenteF']!, lente.fx, lente.fy);
+    gl.uniform2f(this.loc['uLenteC']!, lente.cx, lente.cy);
+    gl.uniform4f(this.loc['uLenteK']!, lente.k[0], lente.k[1], lente.k[2], lente.k[3]);
+    gl.uniform1f(this.loc['uFocalSalida']!, muestreo.focalSalida);
+    gl.uniform1i(this.loc['uRectificar']!, muestreo.rectificar ? 1 : 0);
+    gl.uniform2f(this.loc['uTamano']!, muestreo.ancho, muestreo.alto);
   }
 
   private bindLut(slot: LutSlot, unit: number, suffix: string, bypass: boolean): void {

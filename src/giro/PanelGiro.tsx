@@ -25,14 +25,19 @@ import {
   type Estabilizacion,
 } from './estabilizar';
 import { hayGiro, leerGiroscopio } from './leer';
+import { perfilPara } from './lente';
 import { focalPxDesdeMm, type DatosGiro, type SinGiro } from './tipos';
 
 interface Props {
   clip: TimelineClip | null;
   /** El cabezal, para marcarlo sobre las curvas. En segundos del clip. */
   cabezal: number;
-  /** Le pasa al visor la correccion vigente, o null para no estabilizar. */
-  onEstabilizacion: (estabilizacion: Estabilizacion | null) => void;
+  /**
+   * Le pasa al visor la correccion vigente, o null para no estabilizar. El id
+   * del clip va aparte porque el export monta varios y tiene que saber a cual
+   * corresponde.
+   */
+  onEstabilizacion: (estabilizacion: Estabilizacion | null, clipId: string | null) => void;
 }
 
 /**
@@ -114,6 +119,19 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    * se corre, el problema esta entre la matriz y el shader.
    */
   const [giroDePrueba, setGiroDePrueba] = useState(0);
+  /**
+   * Si se usa el perfil del lente cuando hay uno. Con el modelo del ojo de pez
+   * la correccion en los bordes es la correcta (medido offline: el temblor
+   * residual en las franjas de los bordes baja un 15-20% y el recorte baja de
+   * 14% a 7%). Se deja apagar para comparar.
+   */
+  const [corregirLente, setCorregirLente] = useState(true);
+  /**
+   * Si la salida se endereza (rectas rectas, horizonte derecho) o conserva el
+   * ojo de pez. Enderezar a la focal del perfil recorta la periferia (~30%
+   * del cuadro); sin enderezar no se pierde encuadre. Ver Opciones.rectificar.
+   */
+  const [rectificar, setRectificar] = useState(false);
 
   const leer = async () => {
     if (!clip) return;
@@ -130,6 +148,13 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
   const datos = vigente && hayGiro(vigente) ? vigente : null;
   const optica = datos?.optica ?? null;
 
+  /** El perfil del lente para este clip, escalado a su resolucion, si hay. */
+  const perfil = useMemo(
+    () => (datos && clip ? perfilPara(datos.fuente, clip.info.displayWidth, clip.info.displayHeight) : null),
+    [datos, clip],
+  );
+  const lente = corregirLente ? perfil : null;
+
   /**
    * La focal que se va a usar, por orden de confianza: la que puso el usuario
    * en milimetros, la que declaro la camara, y por ultimo el campo de vision a
@@ -138,6 +163,9 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    */
   const focalPx = useMemo(() => {
     const ancho = clip?.info.displayWidth ?? 0;
+    // Con perfil de lente la focal es la del perfil: es la que deja el centro
+    // de la imagen a la misma escala que el original.
+    if (lente) return lente.fx;
     if (mmAMano && optica?.sensorAnchoMm) {
       const calculada = focalPxDesdeMm(Number(mmAMano), optica.sensorAnchoMm, optica.anchoPx);
       if (calculada) return calculada;
@@ -149,11 +177,12 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       return ancho / 2 / Math.tan((fovAMano * Math.PI) / 360);
     }
     return null;
-  }, [mmAMano, optica, fovAMano, clip?.info.displayWidth]);
+  }, [lente, mmAMano, optica, fovAMano, clip?.info.displayWidth]);
 
   /** De donde salio la focal, para decirlo en pantalla sin que sea un misterio. */
-  const origenFocal =
-    mmAMano && optica?.sensorAnchoMm
+  const origenFocal = lente
+    ? 'del perfil'
+    : mmAMano && optica?.sensorAnchoMm
       ? 'a mano'
       : optica?.focalPx
         ? 'de la cámara'
@@ -165,7 +194,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
     if (giroDePrueba !== 0) {
       return estabilizacionFija(
         { pitch: 0, yaw: giroDePrueba, roll: 0 },
-        { focalPx, ancho: clip.info.displayWidth, alto: clip.info.displayHeight },
+        { focalPx, ancho: clip.info.displayWidth, alto: clip.info.displayHeight, lente, rectificar },
       );
     }
 
@@ -195,17 +224,32 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       mapeo,
       velocidadDeReferencia: VELOCIDAD_DE_PANEO,
       zoomMaximo: 1 + recorteMax / 100,
+      lente,
+      rectificar,
     });
-  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano, giroDePrueba]);
+  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano, giroDePrueba, lente, rectificar]);
 
   // El visor no guarda estado del giroscopio: recibe la correccion ya armada.
   useEffect(() => {
-    onEstabilizacion(estabilizacion);
-  }, [estabilizacion, onEstabilizacion]);
+    onEstabilizacion(estabilizacion, clip?.id ?? null);
+  }, [estabilizacion, onEstabilizacion, clip?.id]);
 
-  // Al desmontar hay que apagarla: la correccion del clip anterior no tiene
-  // nada que ver con el siguiente.
-  useEffect(() => () => onEstabilizacion(null), [onEstabilizacion]);
+  /*
+   * A proposito NO se apaga al desmontar.
+   *
+   * Este panel solo existe en la pestana "clip", asi que apagar al desmontar
+   * significaba perder la correccion al ir a "salida" a exportar: el export
+   * salia sin estabilizar, que es justo cuando mas importa.
+   *
+   * Lo que evita aplicarle la correccion de un clip a otro no es apagarla, es
+   * el `clipId` que va con ella: el visor y el export solo la usan si coincide
+   * con el clip que estan dibujando. Cambiar de clip aca ya recalcula y avisa
+   * con el id nuevo, y destildar la casilla manda null.
+   *
+   * Lo que si queda pendiente: si se cambia el recorte del clip desde otra
+   * pestana, la correccion queda calculada con el rango viejo hasta volver
+   * aca. Se arregla solo cuando los ajustes vivan en ClipDoc.
+   */
 
   const recorte = estabilizacion ? ((estabilizacion.zoom - 1) * 100).toFixed(0) : '0';
   const ideal = estabilizacion ? ((estabilizacion.zoomIdeal - 1) * 100).toFixed(0) : '0';
@@ -265,7 +309,29 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 onChange={setDesfaseMs}
                 texto={`${desfaseMs > 0 ? '+' : ''}${desfaseMs}ms`}
               />
-              {!optica?.focalPx && (
+              {perfil && (
+                <>
+                  <label className="fila">
+                    <input
+                      type="checkbox"
+                      checked={corregirLente}
+                      onChange={(e) => setCorregirLente(e.target.checked)}
+                    />
+                    <span className="comentario">corregir el lente (ojo de pez)</span>
+                  </label>
+                  {corregirLente && (
+                    <label className="fila">
+                      <input
+                        type="checkbox"
+                        checked={rectificar}
+                        onChange={(e) => setRectificar(e.target.checked)}
+                      />
+                      <span className="comentario">enderezar (rectas rectas, recorta ~30%)</span>
+                    </label>
+                  )}
+                </>
+              )}
+              {!optica?.focalPx && !lente && (
                 <Deslizador
                   etiqueta="campo horizontal"
                   valor={fovAMano}
@@ -376,6 +442,11 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                     ? `${optica.sensorAnchoMm.toFixed(1)} mm de ancho`
                     : 'no lo escribió'}
               </span>
+            </li>
+            <li className="hay">
+              <span className="marca">{perfil ? '✓' : '·'}</span>
+              <span className="nombre">perfil de lente</span>
+              <span className="detalle">{perfil ? perfil.nombre : 'ninguno para este formato'}</span>
             </li>
             <li className="hay">
               <span className="marca">{focalPx ? '✓' : '·'}</span>

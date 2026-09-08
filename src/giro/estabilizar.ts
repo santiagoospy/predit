@@ -14,12 +14,13 @@
  *  4. RECORTAR. Rotar la imagen descubre los bordes, asi que hay que agrandarla
  *     lo justo para que no entre negro en ningun cuadro.
  *
- * Lo que NO hace, por decision explicita: no corrige la distorsion del lente
- * (no hay perfil de lente) ni el obturador rodante. Las dos cosas mejoran el
- * resultado, pero las dos necesitan datos que hoy no tenemos, y sin ellas la
- * estabilizacion ya funciona.
+ * Con un perfil de lente (ver lente.ts) ademas corrige con el modelo del ojo
+ * de pez: el muestreo pasa por el modelo del lente en vez de por una matriz, y
+ * la salida puede salir rectificada (rectas rectas) o conservar la proyeccion
+ * original. Lo que NO hace es el obturador rodante.
  */
 
+import { desproyectarLente, proyectarLente, type PerfilLente } from './lente';
 import {
   aMatriz,
   desdeVelocidad,
@@ -312,13 +313,67 @@ export interface Opciones {
    * encuadre y su correccion completa.
    */
   zoomMaximo: number;
+  /**
+   * El perfil del lente, ya escalado a `ancho` x `alto`, o nada.
+   *
+   * Con perfil, la imagen de entrada se trata como el ojo de pez que es y la
+   * salida sale rectificada (rectas rectas, horizonte derecho). `focalPx` pasa
+   * a ser la focal de la SALIDA rectificada; lo razonable es que sea la del
+   * perfil, asi el centro de la imagen queda a la misma escala que la
+   * original.
+   */
+  lente?: PerfilLente | null;
+  /**
+   * Con lente: si la salida se endereza (rectas rectas, como Gyroflow al 100%
+   * de correccion) o conserva la proyeccion del ojo de pez.
+   *
+   * Enderezar a la focal del perfil recorta la periferia (el borde de la
+   * salida cae a ~77% del radio de la entrada, y la esquina a ~70%): el
+   * ojo de pez mete mas campo del que entra en una imagen rectilinea del
+   * mismo tamano. Sin enderezar no se pierde nada y la correccion sigue
+   * siendo la del modelo del lente; el horizonte queda curvo, como en el
+   * original. Por defecto se endereza.
+   */
+  rectificar?: boolean;
 }
+
+/**
+ * Como hay que muestrear la imagen de entrada para armar la de salida. Es lo
+ * que consume el shader, en una de dos formas:
+ *
+ * - `matriz`: sin perfil de lente, una homografia 3x3 en coordenadas de
+ *   textura. Es la de siempre.
+ * - `lente`: con perfil, la homografia no alcanza (el ojo de pez no es lineal)
+ *   y el shader hace la cadena completa: pixel de salida -> rayo -> rotar ->
+ *   proyectar con el lente -> pixel de entrada. Se le pasan las piezas.
+ *
+ * Los pixeles de `lente` son de la imagen a resolucion completa (`ancho` x
+ * `alto`); el shader normaliza, asi la misma correccion sirve para el preview
+ * chico y para el export.
+ */
+export type Muestreo =
+  | { tipo: 'matriz'; uv: number[] }
+  | {
+      tipo: 'lente';
+      /** La rotacion de muestreo, 3x3 por filas, en el marco de la camara. */
+      rotacion: number[];
+      /** La focal de la salida, ya con el zoom. */
+      focalSalida: number;
+      /** Si la salida es rectilinea (true) o tambien ojo de pez (false). */
+      rectificar: boolean;
+      ancho: number;
+      alto: number;
+      lente: PerfilLente;
+    };
 
 /** La estabilizacion ya resuelta, lista para que la consulte el renderer. */
 export interface Estabilizacion {
   /**
    * La matriz 3x3 que lleva un pixel de la imagen de SALIDA al pixel de la
    * imagen de ENTRADA que hay que muestrear, en orden por filas.
+   *
+   * Es el modelo de agujero de alfiler. Con perfil de lente NO describe el
+   * muestreo real (ver `puntoEn`); se conserva para el diagnostico.
    */
   matrizEn: (segundo: number) => number[];
   /**
@@ -330,6 +385,17 @@ export interface Estabilizacion {
    * chico y para el export a tamano completo.
    */
   matrizUvEn: (segundo: number) => number[];
+  /**
+   * El muestreo real de un instante, con o sin lente. Es lo que va al shader.
+   */
+  muestreoEn: (segundo: number) => Muestreo;
+  /**
+   * El muestreo real como funcion: de un pixel de la salida al pixel de la
+   * entrada, a resolucion completa. Con lente pasa por el modelo del ojo de
+   * pez; sin lente es la matriz. Es la referencia que reproduce el shader, y
+   * lo que usan el banco offline y los tests.
+   */
+  puntoEn: (segundo: number) => (x: number, y: number) => [number, number];
   /** Cuanto se agranda la imagen, ya con el tope aplicado. */
   zoom: number;
   /**
@@ -407,6 +473,50 @@ function aplicar(m: number[], x: number, y: number): [number, number] {
 }
 
 /**
+ * El muestreo con perfil de lente, como funcion de pixel a pixel.
+ *
+ * La salida es una camara de agujero de alfiler (rectificada) con focal
+ * `focalPx * zoom` y centro en el medio de la imagen. Cada pixel de salida se
+ * lleva a su rayo, se rota con la misma R que en el caso sin lente, y se
+ * proyecta con el modelo del ojo de pez al pixel de la imagen original. Es la
+ * misma cadena que hace el shader, y la que hace Gyroflow.
+ */
+function muestreoConLente(q: Quat, o: Opciones, lente: PerfilLente, zoom: number) {
+  const r = aMatriz(q);
+  const cx = o.ancho / 2;
+  const cy = o.alto / 2;
+  const f = o.focalPx * zoom;
+  const rectificar = o.rectificar ?? true;
+  /*
+   * Sin rectificar, la salida es el mismo ojo de pez que la entrada (mismo
+   * centro y mismos coeficientes) con la focal escalada por el zoom: el pixel
+   * se desproyecta con el modelo en vez de con el agujero de alfiler.
+   */
+  const salida: PerfilLente = { ...lente, fx: f, fy: (f * lente.fy) / lente.fx };
+  return (x: number, y: number): [number, number] => {
+    let vx: number;
+    let vy: number;
+    if (rectificar) {
+      vx = (x - cx) / f;
+      vy = (y - cy) / f;
+    } else {
+      [vx, vy] = desproyectarLente(salida, x, y);
+    }
+    const rx = r[0]! * vx + r[1]! * vy + r[2]!;
+    const ry = r[3]! * vx + r[4]! * vy + r[5]!;
+    const rz = r[6]! * vx + r[7]! * vy + r[8]!;
+    return proyectarLente(lente, rx, ry, rz);
+  };
+}
+
+/** El muestreo de una correccion, con lente si hay y con la matriz si no. */
+function muestreador(q: Quat, o: Opciones, zoom: number): (x: number, y: number) => [number, number] {
+  if (o.lente) return muestreoConLente(q, o, o.lente, zoom);
+  const m = matrizDeMuestreo(q, o, zoom);
+  return (x, y) => aplicar(m, x, y);
+}
+
+/**
  * Cuanto se exige de sobra al recortar la ganancia, como fraccion del lado
  * menor. La ganancia se calcula en instantes discretos y se interpola entre
  * ellos; en un golpe rapido la correccion cambia tanto entre dos instantes que
@@ -417,24 +527,38 @@ const MARGEN_DE_GANANCIA = 0.002;
 /**
  * El zoom mas chico que evita los bordes negros en TODO el clip.
  *
- * Se prueba por biseccion: con un zoom candidato se transforman las cuatro
- * esquinas de cada cuadro y se mira si alguna cae fuera de la imagen original.
+ * Se prueba por biseccion: con un zoom candidato se transforman puntos del
+ * borde de cada cuadro y se mira si alguno cae fuera de la imagen original.
  * Es fuerza bruta, pero corre una sola vez al preparar el clip y son unas pocas
  * decenas de miles de multiplicaciones.
+ *
+ * Sin lente alcanzan las cuatro esquinas: una homografia lleva rectas a rectas
+ * y el borde queda entre ellas. Con lente el borde de la salida cae como una
+ * curva en la entrada, y con roll el punto mas externo puede quedar en
+ * cualquier lugar del lado, asi que se muestrea cada lado en varios puntos.
+ * Entre dos puntos la curva se aparta muy poco (una fraccion de pixel a esta
+ * densidad), y el margen de la ganancia cubre el resto.
  *
  * Se mira una muestra de cuadros y no todos: el zoom lo decide el peor momento
  * del clip, y ese momento dura mucho mas que un cuadro.
  */
+/** En cuantos tramos se parte cada lado al comprobar el borde con lente. */
+const PUNTOS_POR_LADO = 12;
+
 function esquinasDentro(q: Quat, o: Opciones, zoom: number, margen = 0): boolean {
-  const m = matrizDeMuestreo(q, o, zoom);
-  for (const [ex, ey] of [
-    [0, 0],
-    [o.ancho, 0],
-    [0, o.alto],
-    [o.ancho, o.alto],
-  ] as const) {
-    const [px, py] = aplicar(m, ex, ey);
-    if (px < margen || py < margen || px > o.ancho - margen || py > o.alto - margen) return false;
+  const punto = muestreador(q, o, zoom);
+  const w = o.ancho;
+  const h = o.alto;
+  const borde: [number, number][] = [[0, 0], [w, 0], [0, h], [w, h]];
+  if (o.lente) {
+    for (let i = 1; i < PUNTOS_POR_LADO; i++) {
+      const s = i / PUNTOS_POR_LADO;
+      borde.push([s * w, 0], [s * w, h], [0, s * h], [w, s * h]);
+    }
+  }
+  for (const [ex, ey] of borde) {
+    const [px, py] = punto(ex, ey);
+    if (px < margen || py < margen || px > w - margen || py > h - margen) return false;
   }
   return true;
 }
@@ -637,6 +761,26 @@ function aEspacioUv(m: number[], o: Opciones): number[] {
 }
 
 /**
+ * Lo que va al shader para una correccion dada. Con lente, las piezas de la
+ * cadena (el espejo vertical de la textura lo hace el shader en pixeles, asi
+ * que aca no hay que conjugar nada); sin lente, la homografia en UV.
+ */
+function armarMuestreo(q: Quat, o: Opciones, zoom: number): Muestreo {
+  if (o.lente) {
+    return {
+      tipo: 'lente',
+      rotacion: aMatriz(q),
+      focalSalida: o.focalPx * zoom,
+      rectificar: o.rectificar ?? true,
+      ancho: o.ancho,
+      alto: o.alto,
+      lente: o.lente,
+    };
+  }
+  return { tipo: 'matriz', uv: aEspacioUv(matrizDeMuestreo(q, o, zoom), o) };
+}
+
+/**
  * Prepara la estabilizacion de un clip.
  *
  * `cuadros` son los momentos en los que se va a pedir la correccion, y sirven
@@ -712,6 +856,8 @@ export function prepararEstabilizacion(
   return {
     matrizEn: matriz,
     matrizUvEn: (segundo) => aEspacioUv(matriz(segundo), o),
+    muestreoEn: (segundo) => armarMuestreo(aplicadaEn(segundo), o, zoom),
+    puntoEn: (segundo) => muestreador(aplicadaEn(segundo), o, zoom),
     zoom,
     zoomIdeal,
     ganancia: promedio,
@@ -744,7 +890,7 @@ export function prepararEstabilizacion(
  */
 export function estabilizacionFija(
   grados: { pitch: number; yaw: number; roll: number },
-  o: Pick<Opciones, 'focalPx' | 'ancho' | 'alto'>,
+  o: Pick<Opciones, 'focalPx' | 'ancho' | 'alto' | 'lente' | 'rectificar'>,
 ): Estabilizacion {
   const completa: Opciones = {
     ...o,
@@ -763,6 +909,8 @@ export function estabilizacionFija(
   return {
     matrizEn: matriz,
     matrizUvEn: () => aEspacioUv(matriz(), completa),
+    muestreoEn: () => armarMuestreo(q, completa, 1),
+    puntoEn: () => muestreador(q, completa, 1),
     zoom: 1,
     zoomIdeal: 1,
     ganancia: 1,

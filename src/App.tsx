@@ -102,7 +102,7 @@ export function App() {
    * Va en un ref y no en estado porque la consume el bucle de dibujo: guardarla
    * en useState re-montaria el bucle en cada cambio de deslizador.
    */
-  const estabRef = useRef<Estabilizacion | null>(null);
+  const estabRef = useRef<{ clipId: string; estabilizacion: Estabilizacion } | null>(null);
   /**
    * El instante EXACTO del cuadro que el <video> tiene en pantalla, segun
    * requestVideoFrameCallback (mediaTime). Es distinto de video.currentTime:
@@ -671,15 +671,22 @@ export function App() {
       if (stop || !framing || video.readyState < 2) return;
       try {
         renderer.clear();
-        // La correccion depende del momento del clip: se pide por cuadro.
-        const estab = estabRef.current;
+        /*
+         * La correccion depende del momento del clip: se pide por cuadro.
+         *
+         * Se comprueba de que clip es porque sobrevive a cerrar el panel del
+         * giroscopio (si no, ir a "salida" a exportar la perdia). Sin esta
+         * comparacion, la correccion de un clip se le aplicaria al siguiente.
+         */
+        const guardada = estabRef.current;
+        const estab = guardada && guardada.clipId === selected.id ? guardada.estabilizacion : null;
         // En pausa currentTime es exacto (el cuadro se busco a ese instante);
         // reproduciendo, vale el mediaTime del ultimo cuadro presentado.
         const instante =
           !video.paused && tiempoCuadroRef.current !== null
             ? tiempoCuadroRef.current
             : video.currentTime;
-        renderer.setEstabilizacion(estab ? estab.matrizUvEn(instante) : null);
+        renderer.setEstabilizacion(estab ? estab.muestreoEn(instante) : null);
         renderer.draw(video, framing, bypassRef.current);
 
         const capaActual = capaRef.current;
@@ -1217,8 +1224,10 @@ export function App() {
    * panel la tiene en un efecto, y una funcion nueva por render lo dispararia
    * en loop.
    */
-  const guardarEstabilizacion = useCallback((e: Estabilizacion | null) => {
-    estabRef.current = e;
+  const guardarEstabilizacion = useCallback((e: Estabilizacion | null, clipId: string | null) => {
+    // De que clip es: el export monta varios y solo hay que estabilizar el que
+    // el panel tenia abierto.
+    estabRef.current = e && clipId ? { clipId, estabilizacion: e } : null;
   }, []);
 
   const onExport = useCallback(async () => {
@@ -1253,9 +1262,25 @@ export function App() {
         panX: c.panX,
         panY: c.panY,
         volume: c.volume,
+        // Solo la del clip que el panel del giroscopio tiene preparada. Los
+        // ajustes todavia no se guardan en el proyecto (van a ClipDoc), asi que
+        // vive uno solo por vez: el que se dejo listo en la pestana clip.
+        estabilizacion: estabRef.current?.clipId === c.id ? estabRef.current.estabilizacion : null,
         hasAudio: c.info.hasAudio,
         audioCanDecode: c.info.audioCanDecode,
       }));
+
+      /*
+       * Estabilizar uno de varios se ve como un salto al cambiar de clip, y es
+       * facil creer que el export "no la aplico". Mejor decirlo.
+       */
+      const avisosPrevios: string[] = [];
+      if (estabRef.current && clips.length > 1) {
+        avisosPrevios.push(
+          'La estabilización se aplicó solo al clip que tenías abierto en la pestaña clip: ' +
+            'todavía no se guarda por clip en el proyecto.',
+        );
+      }
 
       const { blob, avisos: avisosDelExport } = await exportClips(lista, {
         preset,
@@ -1268,7 +1293,7 @@ export function App() {
 
       const nombre = `predit-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.mp4`;
       const via = await deliverExport(blob, nombre);
-      setAvisos(avisosDelExport);
+      setAvisos([...avisosPrevios, ...avisosDelExport]);
       // El montaje ya salio: ahora las copias son espacio recuperable, y el
       // panel de proyecto tiene que poder ofrecer liberarlas sin que el usuario
       // lo despliegue primero.

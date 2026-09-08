@@ -44,6 +44,76 @@ uniform sampler2D uFrame;
 uniform mat3 uEstab;
 uniform bool uHayEstab;
 
+/**
+ * El modelo del lente, cuando hay perfil (ver giro/lente.ts, que es la
+ * referencia de estas cuentas). Con lente, uEstab no es la homografia sino la
+ * ROTACION de muestreo, y la cadena se hace entera aca, en pixeles de la
+ * imagen completa: pixel de salida -> rayo -> rotar -> proyectar con el
+ * modelo de ojo de pez -> pixel de entrada.
+ *
+ * La cuenta va en pixeles y no en UV porque el modelo esta calibrado en
+ * pixeles; el tamano llega en uTamano y se normaliza al final. La V de la
+ * textura crece hacia ARRIBA (el video se sube con UNPACK_FLIP_Y_WEBGL), asi
+ * que se da vuelta al entrar y al salir.
+ */
+uniform bool  uHayLente;
+uniform vec2  uLenteF;      // fx, fy de la entrada
+uniform vec2  uLenteC;      // cx, cy
+uniform vec4  uLenteK;      // k1..k4
+uniform float uFocalSalida; // focal de la salida, ya con el zoom
+uniform bool  uRectificar;  // salida rectilinea (true) u ojo de pez (false)
+uniform vec2  uTamano;      // ancho, alto en pixeles
+
+/** theta_d(theta): el polinomio del ojo de pez de OpenCV. */
+float lenteThetaD(float theta) {
+  float t2 = theta * theta;
+  return theta * (1.0 + t2 * (uLenteK.x + t2 * (uLenteK.y + t2 * (uLenteK.z + t2 * uLenteK.w))));
+}
+
+/** De un rayo (x derecha, y abajo, z adelante) al pixel del ojo de pez. */
+vec2 lenteProyectar(vec3 v) {
+  // Hacia atras no hay imagen: un punto lejos, que el clamp deja en el borde.
+  if (v.z <= 1e-9) return vec2(-1e9);
+  vec2 ab = v.xy / v.z;
+  float r = length(ab);
+  float theta = atan(r);
+  float escala = r > 1e-9 ? lenteThetaD(theta) / r : 1.0;
+  return uLenteF * ab * escala + uLenteC;
+}
+
+/**
+ * La inversa, para la salida sin rectificar: del pixel al rayo, con Newton
+ * sobre el polinomio (mismos pasos que desproyectarLente en giro/lente.ts).
+ */
+vec3 lenteDesproyectar(vec2 px, vec2 f) {
+  vec2 ab = (px - uLenteC) / f;
+  float rd = length(ab);
+  if (rd < 1e-9) return vec3(0.0, 0.0, 1.0);
+  float theta = rd;
+  for (int i = 0; i < 6; i++) {
+    float t2 = theta * theta;
+    float g = lenteThetaD(theta) - rd;
+    float dg = 1.0 + t2 * (3.0 * uLenteK.x + t2 * (5.0 * uLenteK.y + t2 * (7.0 * uLenteK.z + t2 * 9.0 * uLenteK.w)));
+    theta -= g / dg;
+  }
+  theta = clamp(theta, 0.0, 1.5697963);
+  return vec3(ab * (tan(theta) / rd), 1.0);
+}
+
+/** El muestreo con lente: de UV de salida a UV de entrada. */
+vec2 muestreoConLente(vec2 uv) {
+  vec2 px = vec2(uv.x * uTamano.x, (1.0 - uv.y) * uTamano.y);
+  vec3 v;
+  if (uRectificar) {
+    v = vec3((px - uTamano * 0.5) / uFocalSalida, 1.0);
+  } else {
+    // La salida es el mismo ojo de pez, con la focal escalada por el zoom.
+    v = lenteDesproyectar(px, vec2(uFocalSalida, uFocalSalida * uLenteF.y / uLenteF.x));
+  }
+  vec2 q = lenteProyectar(uEstab * v);
+  return vec2(q.x / uTamano.x, 1.0 - q.y / uTamano.y);
+}
+
 /** Cuanto se ve la capa, de 0 a 1. El clip de abajo siempre va en 1. */
 uniform float uOpacity;
 /** Si respetar la transparencia de la textura. El clip de abajo es opaco. */
@@ -89,7 +159,9 @@ vec3 applyLut(sampler3D lut, float size, vec3 domMin, vec3 domMax, vec3 color) {
 
 void main() {
   vec2 uv = vUv;
-  if (uHayEstab) {
+  if (uHayLente) {
+    uv = muestreoConLente(vUv);
+  } else if (uHayEstab) {
     vec3 p = uEstab * vec3(vUv, 1.0);
     // La division de perspectiva: una rotacion de camara no es una traslacion
     // plana, y sin dividir por w los bordes quedarian corridos.

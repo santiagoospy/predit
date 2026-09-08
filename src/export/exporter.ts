@@ -25,6 +25,7 @@ import {
   type MixMusic,
 } from '../audio/mix';
 import type { Lut3D } from '../color/cube';
+import type { Estabilizacion } from '../giro/estabilizar';
 import { LutRenderer, type FitMode, type Framing } from '../color/renderer';
 import { capaEnSegundo, capaVisibleEn, framingDeCapa } from '../edit/types';
 import {
@@ -50,6 +51,13 @@ export interface ExportClip {
   fit: FitMode;
   panX?: number;
   panY?: number;
+  /**
+   * La correccion del giroscopio de ESTE clip, o null.
+   *
+   * Es la misma que consume el visor. Va por clip y no por export porque cada
+   * uno tiene su giroscopio, su optica y sus ajustes.
+   */
+  estabilizacion?: Estabilizacion | null;
   /** Volumen del sonido propio del clip, de 0 a 1. */
   volume: number;
   hasAudio: boolean;
@@ -204,6 +212,7 @@ export async function exportClips(
         framesWritten,
         layer: options.layer,
         signal: options.signal,
+        avisos,
         onFrame: (written) =>
           options.onProgress?.({
             fraction: Math.min(1, written / frameRate / totalOutputSeconds),
@@ -245,6 +254,7 @@ interface RenderClipContext {
   layer: ExportLayer | null;
   signal?: AbortSignal | undefined;
   onFrame: (framesWritten: number) => void;
+  avisos: string[];
 }
 
 async function renderClip(clip: ExportClip, ctx: RenderClipContext): Promise<number> {
@@ -272,6 +282,22 @@ async function renderClip(clip: ExportClip, ctx: RenderClipContext): Promise<num
     panX: clip.panX ?? 0,
     panY: clip.panY ?? 0,
   };
+
+  /*
+   * La correccion se calculo en el marco de la imagen MOSTRADA, y el shader la
+   * aplica sobre el UV de la TEXTURA. Con el video derecho son el mismo marco.
+   * Con una rotacion no: la textura llega sin rotar (la rotacion la hace la
+   * geometria, en uTransform), asi que la correccion entraria girada respecto
+   * de la imagen y movería para donde no es. Antes que exportar algo peor que
+   * sin corregir, se apaga y se avisa.
+   */
+  const estabilizacion = rotation === 0 ? (clip.estabilizacion ?? null) : null;
+  if (clip.estabilizacion && rotation !== 0) {
+    ctx.avisos.push(
+      `"${clip.file.name}" está grabado con rotación de ${rotation}°, y la estabilización ` +
+        'todavía no la contempla: ese clip sale sin estabilizar.',
+    );
+  }
 
   const sink = new VideoSampleSink(track);
   const capa = ctx.layer;
@@ -311,9 +337,21 @@ async function renderClip(clip: ExportClip, ctx: RenderClipContext): Promise<num
         const conCapa = capa !== null && capaVisibleEn(capa, enLaLinea);
         // Se recompone solo cuando cambia algo. A velocidad 1x el while da una
         // vuelta sola, asi que en el caso normal esto dibuja una vez, como antes.
-        if (conCapaAntes !== conCapa || (conCapa && capaSeAnima)) {
+        // La correccion cambia en cada cuadro de salida, asi que si hay
+        // estabilizacion hay que redibujar siempre; el atajo de "solo cuando
+        // cambia la capa" vale solo sin ella.
+        if (estabilizacion || conCapaAntes !== conCapa || (conCapa && capaSeAnima)) {
           frame ??= sample.toVideoFrame();
           ctx.renderer.clear();
+          /*
+           * El instante del cuadro es `sample.timestamp`, el del archivo. Aca
+           * es EXACTO, sin el problema del visor (bug 8): no hay reloj de
+           * reproduccion de por medio, se sabe exactamente que cuadro se esta
+           * dibujando.
+           */
+          ctx.renderer.setEstabilizacion(
+            estabilizacion ? estabilizacion.muestreoEn(sample.timestamp) : null,
+          );
           ctx.renderer.draw(frame, framing, false);
           if (conCapa) {
             const animada = capaEnSegundo(capa!, enLaLinea);
