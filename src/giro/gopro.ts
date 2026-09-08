@@ -199,18 +199,78 @@ function buscarLente(
 }
 
 /**
- * Junta las ternas de giroscopio de una muestra, ya escaladas.
+ * La cadena de ejes tal como la arma telemetry-parser para el giroscopio.
+ *
+ * GoPro escribe como estan montados los ejes de dos maneras: MTRX (una matriz
+ * 3x3) o el par ORIN/ORIO (orientacion de entrada y de salida). telemetry-parser
+ * (gopro/mod.rs) usa MTRX si esta; si no, arma la matriz con ORIN y ORIO
+ * (`orientations_to_matrix`); y de la matriz saca la cadena
+ * (`mtrx_to_orientation`). Con ORIN sola NO arma nada, y Gyroflow cae a "XYZ".
+ *
+ * Es importante no "mejorar" esto leyendo ORIN sola: la cadena resultante es la
+ * permutacion inversa de ORIN, y ademas la convencion de Gyroflow esta calibrada
+ * contra clips reales con esta lectura y no con otra.
+ */
+function cadenaDesdeMatriz(m: number[]): string | null {
+  if (m.length < 9) return null;
+  let cadena = '';
+  for (let fila = 0; fila < 3; fila++) {
+    const f = m.slice(fila * 3, fila * 3 + 3);
+    const i = f.findIndex((v) => Math.abs(v) > 0.5);
+    if (i < 0) return null;
+    const letra = 'XYZ'[i]!;
+    cadena += f[i]! > 0 ? letra : letra.toLowerCase();
+  }
+  return cadena;
+}
+
+export function matrizDesdeOrientaciones(orin: string, orio: string): number[] | null {
+  if (orin.length !== 3 || orio.length !== 3) return null;
+  const m: number[] = [];
+  for (const o of orio) {
+    for (const i of orin) {
+      m.push(i === o ? 1 : i.toLowerCase() === o.toLowerCase() ? -1 : 0);
+    }
+  }
+  return m;
+}
+
+function orientacionDelStream(vista: DataView, partes: Nodo[]): string | null {
+  const mtrx = partes.find((p) => p.clave === 'MTRX');
+  if (mtrx) {
+    const cadena = cadenaDesdeMatriz(numeros(vista, mtrx));
+    if (cadena) return cadena;
+  }
+  const orin = partes.find((p) => p.clave === 'ORIN');
+  const orio = partes.find((p) => p.clave === 'ORIO');
+  if (orin && orio) {
+    const m = matrizDesdeOrientaciones(texto(vista, orin), texto(vista, orio));
+    if (m) return cadenaDesdeMatriz(m);
+  }
+  return null;
+}
+
+/**
+ * Junta las ternas de giroscopio de una muestra, ya escaladas, y la cadena de
+ * ejes del MISMO stream.
  *
  * Recorre los DEVC y sus STRM buscando el que tenga un GYRO. El SCAL vive en el
- * mismo STRM y puede traer un divisor por eje o uno solo para los tres.
+ * mismo STRM y puede traer un divisor por eje o uno solo para los tres. La
+ * orientacion tambien se lee de ese STRM y no de cualquier lado: el
+ * acelerometro tiene su propio ORIN, y no tiene por que coincidir.
  */
-function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number; z: number }[] {
+function ternasDeMuestra(
+  vista: DataView,
+  raiz: Nodo[],
+): { ternas: { x: number; y: number; z: number }[]; orientacion: string | null } {
   const ternas: { x: number; y: number; z: number }[] = [];
+  let orientacion: string | null = null;
 
   const verStream = (stream: Nodo) => {
     const partes = hijos(vista, stream);
     const gyro = partes.find((p) => p.clave === 'GYRO');
     if (!gyro) return;
+    if (!orientacion) orientacion = orientacionDelStream(vista, partes);
     const scal = partes.find((p) => p.clave === 'SCAL');
     const divisores = scal ? numeros(vista, scal) : [];
     const crudos = numeros(vista, gyro);
@@ -250,7 +310,7 @@ function ternasDeMuestra(vista: DataView, raiz: Nodo[]): { x: number; y: number;
       verStream(nodo);
     }
   }
-  return ternas;
+  return { ternas, orientacion };
 }
 
 /**
@@ -275,10 +335,9 @@ export function leerGoPro(
   const salida: MuestraGiro[] = [];
   let lente: Optica | null = null;
   /**
-   * ORIN: como estan montados los ejes del giroscopio, y DVNM: el modelo.
-   *
-   * ORIN es el dato que evita adivinar el mapeo de ejes, que es el error que
-   * despues se ve como "estabiliza al reves".
+   * La cadena de ejes del giroscopio (ver `orientacionDelStream`), y DVNM: el
+   * modelo. Queda en null si la camara escribe ORIN sin ORIO ni MTRX, que es lo
+   * que hacen las HERO recientes; ahi vale el mapeo por defecto de GoPro.
    */
   let orientacionEjes: string | null = null;
   let modelo: string | null = null;
@@ -309,13 +368,12 @@ export function leerGoPro(
       const hallado = mapaDeClaves(vista, raiz);
       for (const clave of hallado.keys()) claves.add(clave);
       lente = buscarLente(vista, hallado, anchoDelVideo);
-      const orin = hallado.get('ORIN');
-      if (orin && !orientacionEjes) orientacionEjes = texto(vista, orin);
       const dvnm = hallado.get('DVNM');
       if (dvnm && !modelo) modelo = texto(vista, dvnm);
     }
 
-    const ternas = ternasDeMuestra(vista, raiz);
+    const { ternas, orientacion } = ternasDeMuestra(vista, raiz);
+    if (orientacion && !orientacionEjes) orientacionEjes = orientacion;
     if (ternas.length === 0) continue;
 
     // Cuanto dura esta muestra: hasta la siguiente, o lo mismo que la anterior

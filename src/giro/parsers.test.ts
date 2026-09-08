@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { leerGoPro } from './gopro';
+import { leerGoPro, matrizDesdeOrientaciones } from './gopro';
 import { leerSony } from './sony';
 
 /** Arma una muestra RTMD de Sony con los tags que importan. */
@@ -409,5 +409,58 @@ describe('unidades del giroscopio de GoPro', () => {
   it('sin unidad declarada deja los valores como estan', () => {
     const { muestras } = leerGoPro([{ bytes: conUnidad(null), segundo: 0 }], 4000);
     expect(muestras[0]!.x).toBeCloseTo(10, 5);
+  });
+});
+
+describe('la cadena de ejes de GoPro, como la arma telemetry-parser', () => {
+  const letras = (clave: string, valor: string) =>
+    nodo(clave, 'c', 1, valor.length, [...valor].map((c) => c.charCodeAt(0)));
+
+  /** Un stream de GYRO con lo que se le pida al lado. */
+  function conEjes(extras: number[][]): ArrayBuffer {
+    const gyro = nodo('GYRO', 's', 6, 1, [0, 100, 0, 0, 0, 0]);
+    const scal = nodo('SCAL', 's', 2, 1, [0, 10]);
+    const cuerpo = [...extras.flat(), ...scal, ...gyro];
+    const strm = nodo('STRM', ' ', 1, cuerpo.length, cuerpo);
+    const devc = nodo('DEVC', ' ', 1, strm.length, strm);
+    return new Uint8Array(devc).buffer;
+  }
+
+  it('con ORIN y ORIO arma la matriz y de ahi la cadena', () => {
+    // Es la permutacion INVERSA de ORIN: con ORIN "ZXY" y ORIO "XYZ", la fila
+    // X busca donde esta la X en ORIN (posicion 1 -> Y), y asi.
+    expect(matrizDesdeOrientaciones('ZXY', 'XYZ')).toEqual([0, 1, 0, 0, 0, 1, 1, 0, 0]);
+    const { orientacionEjes } = leerGoPro(
+      [{ bytes: conEjes([letras('ORIN', 'ZXY'), letras('ORIO', 'XYZ')]), segundo: 0 }],
+      4000,
+    );
+    expect(orientacionEjes).toBe('YZX');
+  });
+
+  it('una letra con distinto caso es el eje negado', () => {
+    const { orientacionEjes } = leerGoPro(
+      [{ bytes: conEjes([letras('ORIN', 'xYZ'), letras('ORIO', 'XYZ')]), segundo: 0 }],
+      4000,
+    );
+    expect(orientacionEjes).toBe('xYZ');
+  });
+
+  it('con ORIN sola no inventa nada: queda en null y vale el defecto', () => {
+    const { orientacionEjes } = leerGoPro(
+      [{ bytes: conEjes([letras('ORIN', 'ZXY')]), segundo: 0 }],
+      4000,
+    );
+    expect(orientacionEjes).toBeNull();
+  });
+
+  it('MTRX manda sobre ORIN y ORIO', () => {
+    const m = new DataView(new ArrayBuffer(36));
+    [0, 0, 1, -1, 0, 0, 0, 1, 0].forEach((v, i) => m.setFloat32(i * 4, v));
+    const mtrx = nodo('MTRX', 'f', 4, 9, [...new Uint8Array(m.buffer)]);
+    const { orientacionEjes } = leerGoPro(
+      [{ bytes: conEjes([mtrx, letras('ORIN', 'XYZ'), letras('ORIO', 'XYZ')]), segundo: 0 }],
+      4000,
+    );
+    expect(orientacionEjes).toBe('ZxY');
   });
 });
