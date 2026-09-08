@@ -103,6 +103,17 @@ export function App() {
    * en useState re-montaria el bucle en cada cambio de deslizador.
    */
   const estabRef = useRef<Estabilizacion | null>(null);
+  /**
+   * El instante EXACTO del cuadro que el <video> tiene en pantalla, segun
+   * requestVideoFrameCallback (mediaTime). Es distinto de video.currentTime:
+   * currentTime es el reloj de reproduccion y puede ir uno o dos cuadros
+   * adelante o atras del cuadro realmente decodificado. Para el color no
+   * importa; para la estabilizacion es la diferencia entre corregir el temblor
+   * y agregarle otro: un error de 40-80 ms en un temblor de caminar (5-10 Hz)
+   * corrige con la fase equivocada, y la imagen se ve PEOR que sin corregir.
+   * Es exactamente lo que paso en las primeras pruebas con clips reales.
+   */
+  const tiempoCuadroRef = useRef<number | null>(null);
   const framingRef = useRef<Framing | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /** Lo mismo que `todo`, pero para los efectos: leerlo no los re-suscribe. */
@@ -662,7 +673,13 @@ export function App() {
         renderer.clear();
         // La correccion depende del momento del clip: se pide por cuadro.
         const estab = estabRef.current;
-        renderer.setEstabilizacion(estab ? estab.matrizUvEn(video.currentTime) : null);
+        // En pausa currentTime es exacto (el cuadro se busco a ese instante);
+        // reproduciendo, vale el mediaTime del ultimo cuadro presentado.
+        const instante =
+          !video.paused && tiempoCuadroRef.current !== null
+            ? tiempoCuadroRef.current
+            : video.currentTime;
+        renderer.setEstabilizacion(estab ? estab.matrizUvEn(instante) : null);
         renderer.draw(video, framing, bypassRef.current);
 
         const capaActual = capaRef.current;
@@ -693,9 +710,21 @@ export function App() {
     };
     handle = requestAnimationFrame(loop);
 
+    // Y ADEMAS rVFC, solo para anotar el instante exacto de cada cuadro nuevo.
+    // No dibuja: el dibujo sigue en el rAF de arriba. Ver tiempoCuadroRef.
+    let handleVfc = 0;
+    const conVfc = 'requestVideoFrameCallback' in video;
+    const anotar = (_ahora: number, meta: { mediaTime: number }) => {
+      tiempoCuadroRef.current = meta.mediaTime;
+      if (!stop) handleVfc = video.requestVideoFrameCallback(anotar);
+    };
+    if (conVfc) handleVfc = video.requestVideoFrameCallback(anotar);
+
     return () => {
       stop = true;
       cancelAnimationFrame(handle);
+      if (conVfc && handleVfc) video.cancelVideoFrameCallback(handleVfc);
+      tiempoCuadroRef.current = null;
     };
   }, [selected, previewSize]);
 
