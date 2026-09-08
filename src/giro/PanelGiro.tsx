@@ -11,10 +11,11 @@
  * mal" de "esto se leyo mal", que son dos problemas muy distintos.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { TimelineClip } from '../edit/types';
 import { Deslizador } from '../ui/Deslizador';
+import { AJUSTES_POR_DEFECTO, type AjustesGiro } from './ajustes';
 import { Curvas } from './Curvas';
 import {
   cadenaComoGyroflow,
@@ -39,6 +40,12 @@ interface Props {
    * corresponde.
    */
   onEstabilizacion: (estabilizacion: Estabilizacion | null, clipId: string | null) => void;
+  /**
+   * Cambia un ajuste del clip abierto. Los ajustes no viven aca sino en el
+   * clip (`TimelineClip.giro`): es lo que hace que se guarden con el proyecto
+   * y que pasar a otro clip y volver no los pierda.
+   */
+  onAjustes: (parcial: Partial<AjustesGiro>) => void;
 }
 
 /**
@@ -58,100 +65,75 @@ const MUESTRAS_DE_RECORTE = 200;
  */
 const VELOCIDAD_DE_PANEO = 15;
 
+/** Una lectura del giroscopio ya hecha, guardada para no repetirla. */
+interface Lectura {
+  resultado: DatosGiro | SinGiro;
+  /** Milisegundos que costo leerla, para el diagnostico. */
+  tardo: number;
+}
+
 /**
- * El campo horizontal por defecto cuando la camara no dice cual es.
+ * Con que se reconoce el ARCHIVO de un clip.
  *
- * Medido contra el video en una HERO13 Black en 8:7 (3840x3360), modo ancho:
- * la focal que predice el movimiento de la imagen es ~1500 px, que son 104°
- * de campo horizontal. Con 120° (1108 px) la correccion quedaba un 35% corta.
+ * La lectura se guarda por archivo y no por clip a proposito: cortar un video
+ * en tres da tres clips con id propio pero un solo archivo, y leer el mismo
+ * giroscopio tres veces son varios segundos regalados. Los ajustes, en cambio,
+ * van por clip: cada pedazo puede querer su propia suavidad.
  */
-const FOV_POR_DEFECTO = 104;
+function claveDeArchivo(clip: TimelineClip): string {
+  return `${clip.file.name}|${clip.file.size}|${clip.file.lastModified}`;
+}
 
-export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
-  const [resultado, setResultado] = useState<DatosGiro | SinGiro | null>(null);
+export function PanelGiro({ clip, cabezal, onEstabilizacion, onAjustes }: Props) {
+  /** Lo leido de cada archivo. Sobrevive a cambiar de clip y a volver. */
+  const [lecturas, setLecturas] = useState<Map<string, Lectura>>(() => new Map());
   const [leyendo, setLeyendo] = useState(false);
-  const [tardo, setTardo] = useState(0);
-  /** De que clip son los datos que hay en pantalla. */
-  const [deQuien, setDeQuien] = useState<string | null>(null);
 
-  const [activo, setActivo] = useState(false);
-  /** Cuantos segundos de movimiento se promedian para sacar el temblor. */
-  const [suavidad, setSuavidad] = useState(1);
-  /** Cuanto se corre el giroscopio respecto del video, en milisegundos. */
-  const [desfaseMs, setDesfaseMs] = useState(0);
-  /**
-   * Los milimetros que puso el usuario a mano.
-   *
-   * Hace falta con un lente manual: sin contactos electricos, la camara no sabe
-   * que lente tiene puesto y no escribe la focal. El ancho del sensor si lo
-   * escribe, asi que con el numero del barril del lente alcanza.
-   */
-  const [mmAMano, setMmAMano] = useState('');
-  /**
-   * El campo de vision a ojo, para cuando no hay NI focal NI sensor.
-   *
-   * Es el caso de las GoPro que no escriben su calibracion. Sin este numero no
-   * se puede saber cuantos pixeles mover por cada grado que giro la camara, y
-   * es preferible una perilla honesta que un valor inventado.
-   */
-  const [fovAMano, setFovAMano] = useState(FOV_POR_DEFECTO);
-  /**
-   * Cuanto encuadre se acepta perder, como maximo.
-   *
-   * Sin tope el recorte lo decide el peor instante del clip: apoyar la camara
-   * al final le impone su zoom a todo lo anterior. Con tope, ese instante se
-   * corrige solo hasta donde entra.
-   */
-  const [recorteMax, setRecorteMax] = useState(30);
-  /**
-   * El codigo de ejes escrito a mano, para cuando el declarado no alcanza.
-   *
-   * Es lo unico de todo el pipeline que los datos no terminan de fijar: la
-   * camara dice como estan montados sus ejes, pero no en que convencion, y una
-   * convencion equivocada se ve como "se inclina y no estabiliza". Tres letras
-   * cubren las 48 combinaciones posibles y se resuelve mirando la pantalla.
-   */
-  const [ejesAMano, setEjesAMano] = useState('');
-  /**
-   * Un giro fijo de prueba, en grados de yaw. Es diagnostico.
-   *
-   * Separa dos problemas que en pantalla se ven iguales: que la correccion
-   * este mal calculada, o que no llegue al visor. Si al mover esto la imagen no
-   * se corre, el problema esta entre la matriz y el shader.
-   */
-  const [giroDePrueba, setGiroDePrueba] = useState(0);
-  /**
-   * Si se usa el perfil del lente cuando hay uno. Con el modelo del ojo de pez
-   * la correccion en los bordes es la correcta (medido offline: el temblor
-   * residual en las franjas de los bordes baja un 15-20% y el recorte baja de
-   * 14% a 7%). Se deja apagar para comparar.
-   */
-  const [corregirLente, setCorregirLente] = useState(true);
-  /**
-   * Si la salida se endereza (rectas rectas, horizonte derecho) o conserva el
-   * ojo de pez. Enderezar a la focal del perfil recorta la periferia (~30%
-   * del cuadro); sin enderezar no se pierde encuadre. Ver Opciones.rectificar.
-   */
-  const [rectificar, setRectificar] = useState(false);
-  /**
-   * Si se corrige el obturador rodante cuando la camara dice cuanto tarda en
-   * leerse (Sony lo escribe). Medido offline en una ZV-E10 II: sin esto el
-   * temblor residual es 0.9 px arriba y 2.1 abajo; con esto, 0.7 y 1.0.
-   */
-  const [obturador, setObturador] = useState(true);
+  const ajustes = clip?.giro ?? AJUSTES_POR_DEFECTO;
+  const {
+    activo,
+    suavidad,
+    desfaseMs,
+    mmAMano,
+    fovAMano,
+    recorteMax,
+    ejesAMano,
+    giroDePrueba,
+    corregirLente,
+    rectificar,
+    obturador,
+  } = ajustes;
 
-  const leer = async () => {
+  const lectura = clip ? lecturas.get(claveDeArchivo(clip)) ?? null : null;
+  const tardo = lectura?.tardo ?? 0;
+
+  const leer = useCallback(async () => {
     if (!clip) return;
+    const clave = claveDeArchivo(clip);
     setLeyendo(true);
     const arranque = performance.now();
     const r = await leerGiroscopio(clip.file, clip.info.displayWidth);
-    setTardo(performance.now() - arranque);
-    setResultado(r);
-    setDeQuien(clip.id);
+    const cuanto = performance.now() - arranque;
+    setLecturas((previas) => new Map(previas).set(clave, { resultado: r, tardo: cuanto }));
     setLeyendo(false);
-  };
+  }, [clip]);
 
-  const vigente = deQuien === clip?.id ? resultado : null;
+  const vigente = lectura?.resultado ?? null;
+
+  /*
+   * Un clip que quedo guardado como estabilizado se lee solo al abrirlo.
+   *
+   * Al reabrir un proyecto vuelven los ajustes pero no las mediciones -esas se
+   * releen del archivo-, asi que sin esto la casilla figuraria tildada y la
+   * imagen saldria sin corregir hasta apretar el boton. Solo pasa con los clips
+   * que el usuario ya habia estabilizado, y una sola vez por archivo: el
+   * resultado queda en `lecturas`, y hasta el "no tiene giroscopio" se guarda,
+   * asi que un archivo sin datos no se reintenta en loop.
+   */
+  useEffect(() => {
+    if (!clip || !clip.giro.activo || lectura || leyendo) return;
+    void leer();
+  }, [clip, lectura, leyendo, leer]);
   const datos = vigente && hayGiro(vigente) ? vigente : null;
   const optica = datos?.optica ?? null;
 
@@ -295,7 +277,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
               type="checkbox"
               checked={activo}
               disabled={!focalPx}
-              onChange={(e) => setActivo(e.target.checked)}
+              onChange={(e) => onAjustes({ activo: e.target.checked })}
             />
             <span className="comentario">estabilizar este clip</span>
           </label>
@@ -308,7 +290,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 min={0.02}
                 max={4}
                 paso={0.05}
-                onChange={setSuavidad}
+                onChange={(v) => onAjustes({ suavidad: v })}
                 texto={`${suavidad.toFixed(2)}s`}
               />
               <Deslizador
@@ -317,7 +299,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 min={-200}
                 max={200}
                 paso={5}
-                onChange={setDesfaseMs}
+                onChange={(v) => onAjustes({ desfaseMs: v })}
                 texto={`${desfaseMs > 0 ? '+' : ''}${desfaseMs}ms`}
               />
               {perfil && (
@@ -326,7 +308,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                     <input
                       type="checkbox"
                       checked={corregirLente}
-                      onChange={(e) => setCorregirLente(e.target.checked)}
+                      onChange={(e) => onAjustes({ corregirLente: e.target.checked })}
                     />
                     <span className="comentario">corregir el lente (ojo de pez)</span>
                   </label>
@@ -335,7 +317,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                       <input
                         type="checkbox"
                         checked={rectificar}
-                        onChange={(e) => setRectificar(e.target.checked)}
+                        onChange={(e) => onAjustes({ rectificar: e.target.checked })}
                       />
                       <span className="comentario">enderezar (rectas rectas, recorta ~30%)</span>
                     </label>
@@ -347,7 +329,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                   <input
                     type="checkbox"
                     checked={obturador}
-                    onChange={(e) => setObturador(e.target.checked)}
+                    onChange={(e) => onAjustes({ obturador: e.target.checked })}
                   />
                   <span className="comentario">
                     corregir el obturador rodante ({(datos.tiempos.tiempoDeLectura * 1000).toFixed(1)} ms)
@@ -361,7 +343,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                   min={40}
                   max={160}
                   paso={1}
-                  onChange={setFovAMano}
+                  onChange={(v) => onAjustes({ fovAMano: v })}
                   texto={`${fovAMano}°`}
                 />
               )}
@@ -371,7 +353,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 min={0}
                 max={60}
                 paso={1}
-                onChange={setRecorteMax}
+                onChange={(v) => onAjustes({ recorteMax: v })}
                 texto={`${recorteMax}%`}
               />
               <div className="fila nombrar">
@@ -382,7 +364,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                   spellCheck={false}
                   value={ejesAMano}
                   placeholder={datos.orientacionEjes ?? 'XYZ'}
-                  onChange={(e) => setEjesAMano(e.target.value)}
+                  onChange={(e) => onAjustes({ ejesAMano: e.target.value })}
                 />
               </div>
               <small>
@@ -397,7 +379,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 min={-10}
                 max={10}
                 paso={0.5}
-                onChange={setGiroDePrueba}
+                onChange={(v) => onAjustes({ giroDePrueba: v })}
                 texto={giroDePrueba === 0 ? 'apagado' : `${giroDePrueba}° yaw`}
               />
               {giroDePrueba !== 0 && (
@@ -518,7 +500,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 step={1}
                 value={mmAMano}
                 placeholder={optica.focalMm?.toFixed(0) ?? '35'}
-                onChange={(e) => setMmAMano(e.target.value)}
+                onChange={(e) => onAjustes({ mmAMano: e.target.value })}
               />
             </div>
           )}

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MusicTrack, OverlayLayer, TimelineClip } from '../edit/types';
 import { EXPORT_PRESETS } from '../export/presets';
+import { AJUSTES_POR_DEFECTO } from '../giro/ajustes';
 import type { ClipInfo } from '../media/probe';
 import {
   claveMedio,
@@ -52,6 +53,7 @@ function clip(id: string, file: File, extra: Partial<TimelineClip> = {}): Timeli
     warnings: [],
     lutConvId: null,
     lutLookId: null,
+    giro: AJUSTES_POR_DEFECTO,
     lift: 0,
     gamma: 1,
     gain: 1,
@@ -103,6 +105,7 @@ describe('serializarProyecto', () => {
       trimIn: 2,
       trimOut: 8,
       volume: 1,
+      giro: AJUSTES_POR_DEFECTO,
     });
     expect(doc.actualizado).toBe(555);
     // Lo que no se puede serializar no tiene que haberse colado.

@@ -16,6 +16,7 @@
  */
 
 import type { FitMode } from '../color/renderer';
+import type { AjustesGiro } from '../giro/ajustes';
 import { clipOutputDuration, type MusicTrack, type OverlayLayer, type TimelineClip } from '../edit/types';
 import type { ExportPreset } from '../export/presets';
 
@@ -74,6 +75,12 @@ export interface ClipDoc {
   trimIn: number;
   trimOut: number;
   volume: number;
+  /**
+   * Como se estabiliza. Opcional al LEER, igual que el grade: un proyecto
+   * guardado antes de que existiera la estabilizacion no lo trae, y quien lo
+   * lea tiene que pasar por sanearAjustes() en vez de confiar en que este.
+   */
+  giro?: AjustesGiro;
 }
 
 /** La musica guardada: sus marcas y de donde salio, sin el AudioBuffer. */
@@ -175,6 +182,7 @@ export function serializarProyecto(estado: EstadoProyecto, ahora = Date.now()): 
       trimIn: c.trimIn,
       trimOut: c.trimOut,
       volume: c.volume,
+      giro: c.giro,
     })),
     music: music
       ? {

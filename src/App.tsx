@@ -44,6 +44,7 @@ import {
   EXPORT_PRESETS,
   type ExportPreset,
 } from './export/presets';
+import { AJUSTES_POR_DEFECTO, type AjustesGiro } from './giro/ajustes';
 import type { Estabilizacion } from './giro/estabilizar';
 import { PanelGiro } from './giro/PanelGiro';
 import { Deslizador } from './ui/Deslizador';
@@ -97,12 +98,16 @@ export function App() {
   const rendererRef = useRef<LutRenderer | null>(null);
   const bypassRef = useRef(false);
   /**
-   * La correccion de estabilizacion del clip seleccionado, o null.
+   * La correccion de estabilizacion de cada clip que la tenga, por id.
+   *
+   * Es un mapa y no una sola porque antes era una sola: estabilizar el clip A,
+   * pasar al B y volver perdia lo del A, y el export salia con un solo clip
+   * corregido. Guardar por id deja estabilizar todo el montaje de a un clip.
    *
    * Va en un ref y no en estado porque la consume el bucle de dibujo: guardarla
    * en useState re-montaria el bucle en cada cambio de deslizador.
    */
-  const estabRef = useRef<{ clipId: string; estabilizacion: Estabilizacion } | null>(null);
+  const estabRef = useRef<Map<string, Estabilizacion>>(new Map());
   /**
    * El instante EXACTO del cuadro que el <video> tiene en pantalla, segun
    * requestVideoFrameCallback (mediaTime). Es distinto de video.currentTime:
@@ -267,6 +272,21 @@ export function App() {
   const updateSelected = useCallback(
     (patch: Partial<TimelineClip>) => {
       setClips((prev) => prev.map((c) => (c.id === selectedId ? { ...c, ...patch } : c)));
+    },
+    [selectedId],
+  );
+
+  /**
+   * Mueve un ajuste de estabilizacion del clip seleccionado.
+   *
+   * Aparte de updateSelected porque hay que fusionar contra lo que el clip ya
+   * tiene: un patch plano pisaria los otros diez ajustes con undefined.
+   */
+  const cambiarGiro = useCallback(
+    (parcial: Partial<AjustesGiro>) => {
+      setClips((prev) =>
+        prev.map((c) => (c.id === selectedId ? { ...c, giro: { ...c.giro, ...parcial } } : c)),
+      );
     },
     [selectedId],
   );
@@ -678,8 +698,7 @@ export function App() {
          * giroscopio (si no, ir a "salida" a exportar la perdia). Sin esta
          * comparacion, la correccion de un clip se le aplicaria al siguiente.
          */
-        const guardada = estabRef.current;
-        const estab = guardada && guardada.clipId === selected.id ? guardada.estabilizacion : null;
+        const estab = estabRef.current.get(selected.id) ?? null;
         // En pausa currentTime es exacto (el cuadro se busco a ese instante);
         // reproduciendo, vale el mediaTime del ultimo cuadro presentado.
         const instante =
@@ -886,6 +905,7 @@ export function App() {
           trimIn: 0,
           trimOut: info.durationSeconds,
           volume: 1,
+          giro: AJUSTES_POR_DEFECTO,
         });
       } catch (e) {
         fallos.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`);
@@ -901,6 +921,8 @@ export function App() {
   }, []);
 
   const removeClip = useCallback((id: string) => {
+    // Su correccion son matrices por cuadro: sin esto quedan colgando.
+    estabRef.current.delete(id);
     setClips((prev) => {
       const victima = prev.find((c) => c.id === id);
       if (victima) URL.revokeObjectURL(victima.url);
@@ -1225,9 +1247,11 @@ export function App() {
    * en loop.
    */
   const guardarEstabilizacion = useCallback((e: Estabilizacion | null, clipId: string | null) => {
-    // De que clip es: el export monta varios y solo hay que estabilizar el que
-    // el panel tenia abierto.
-    estabRef.current = e && clipId ? { clipId, estabilizacion: e } : null;
+    // Solo se toca la entrada de ESE clip: el panel avisa por el clip abierto,
+    // y las correcciones de los demas tienen que sobrevivir a que se cambie.
+    if (!clipId) return;
+    if (e) estabRef.current.set(clipId, e);
+    else estabRef.current.delete(clipId);
   }, []);
 
   const onExport = useCallback(async () => {
@@ -1262,23 +1286,22 @@ export function App() {
         panX: c.panX,
         panY: c.panY,
         volume: c.volume,
-        // Solo la del clip que el panel del giroscopio tiene preparada. Los
-        // ajustes todavia no se guardan en el proyecto (van a ClipDoc), asi que
-        // vive uno solo por vez: el que se dejo listo en la pestana clip.
-        estabilizacion: estabRef.current?.clipId === c.id ? estabRef.current.estabilizacion : null,
+        // La de este clip, si se le dejo una preparada en la pestana clip.
+        estabilizacion: estabRef.current.get(c.id) ?? null,
         hasAudio: c.info.hasAudio,
         audioCanDecode: c.info.audioCanDecode,
       }));
 
       /*
-       * Estabilizar uno de varios se ve como un salto al cambiar de clip, y es
-       * facil creer que el export "no la aplico". Mejor decirlo.
+       * Estabilizar unos si y otros no se ve como un salto al cambiar de clip,
+       * y es facil creer que el export "no la aplico". Mejor decir cuantos.
        */
       const avisosPrevios: string[] = [];
-      if (estabRef.current && clips.length > 1) {
+      const estabilizados = clips.filter((c) => estabRef.current.has(c.id)).length;
+      if (estabilizados > 0 && estabilizados < clips.length) {
         avisosPrevios.push(
-          'La estabilización se aplicó solo al clip que tenías abierto en la pestaña clip: ' +
-            'todavía no se guarda por clip en el proyecto.',
+          `La estabilización se aplicó a ${estabilizados} de ${clips.length} clips: ` +
+            'los demás salen sin corregir porque no se les activó en la pestaña clip.',
         );
       }
 
@@ -1735,6 +1758,7 @@ export function App() {
               clip={selected ?? null}
               cabezal={currentTime}
               onEstabilizacion={guardarEstabilizacion}
+              onAjustes={cambiarGiro}
             />
           )}
 

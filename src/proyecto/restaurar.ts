@@ -16,6 +16,7 @@
 import { decodeAudioRange } from '../audio/decode';
 import { sanearGrade } from '../color/grade';
 import type { LibraryLut, MusicTrack, OverlayLayer, TimelineClip } from '../edit/types';
+import { sanearAjustes } from '../giro/ajustes';
 import { DEFAULT_PRESET, EXPORT_PRESETS, type ExportPreset } from '../export/presets';
 import { cargarImagen } from '../media/imagen';
 import { clipWarnings, probeClip } from '../media/probe';
@@ -139,6 +140,9 @@ export async function reconstruir(
         trimIn,
         trimOut,
         volume: guardado.volume,
+        // Con sanearAjustes por lo mismo que el grade: un proyecto de antes de
+        // que existiera la estabilizacion abre sin estabilizar, no roto.
+        giro: sanearAjustes(guardado.giro),
       });
     } catch (e) {
       avisos.push(`No pude reabrir "${file.name}": ${comoTexto(e)}`);

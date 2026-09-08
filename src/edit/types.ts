@@ -1,4 +1,5 @@
 import type { Lut3D } from '../color/cube';
+import type { AjustesGiro } from '../giro/ajustes';
 import type { FitMode, Framing } from '../color/renderer';
 import type { ClipInfo } from '../media/probe';
 import type { HuellaArchivo } from '../proyecto/esquema';
@@ -40,6 +41,13 @@ export interface TimelineClip {
   trimOut: number;
   /** Volumen del sonido propio del clip, de 0 a 1. */
   volume: number;
+  /**
+   * Como se estabiliza este clip. Vive aca y no en el panel del giroscopio
+   * porque es lo unico de la estabilizacion que decidio la persona: asi se
+   * guarda con el proyecto y se conserva al cambiar de clip. Las mediciones
+   * del giroscopio no estan aca, se releen del archivo.
+   */
+  giro: AjustesGiro;
 }
 
 /**
