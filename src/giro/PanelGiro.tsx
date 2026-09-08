@@ -17,6 +17,7 @@ import type { TimelineClip } from '../edit/types';
 import { Deslizador } from '../ui/Deslizador';
 import { Curvas } from './Curvas';
 import {
+  cadenaComoGyroflow,
   mapeoDesdeOrientacion,
   prepararEstabilizacion,
   MAPEO_GOPRO,
@@ -132,6 +133,12 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    * del cuadro); sin enderezar no se pierde encuadre. Ver Opciones.rectificar.
    */
   const [rectificar, setRectificar] = useState(false);
+  /**
+   * Si se corrige el obturador rodante cuando la camara dice cuanto tarda en
+   * leerse (Sony lo escribe). Medido offline en una ZV-E10 II: sin esto el
+   * temblor residual es 0.9 px arriba y 2.1 abajo; con esto, 0.7 y 1.0.
+   */
+  const [obturador, setObturador] = useState(true);
 
   const leer = async () => {
     if (!clip) return;
@@ -226,8 +233,12 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       zoomMaximo: 1 + recorteMax / 100,
       lente,
       rectificar,
+      // Lo que la camara dice de sus tiempos, si lo dice. El deslizador de
+      // desfase queda como ajuste fino alrededor de esto.
+      retardoDelCuadro: datos.tiempos?.retardoDelCuadro ?? 0,
+      tiempoDeLectura: obturador ? datos.tiempos?.tiempoDeLectura ?? 0 : 0,
     });
-  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano, giroDePrueba, lente, rectificar]);
+  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano, giroDePrueba, lente, rectificar, obturador]);
 
   // El visor no guarda estado del giroscopio: recibe la correccion ya armada.
   useEffect(() => {
@@ -330,6 +341,18 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                     </label>
                   )}
                 </>
+              )}
+              {datos.tiempos && datos.tiempos.tiempoDeLectura > 0 && (
+                <label className="fila">
+                  <input
+                    type="checkbox"
+                    checked={obturador}
+                    onChange={(e) => setObturador(e.target.checked)}
+                  />
+                  <span className="comentario">
+                    corregir el obturador rodante ({(datos.tiempos.tiempoDeLectura * 1000).toFixed(1)} ms)
+                  </span>
+                </label>
               )}
               {!optica?.focalPx && !lente && (
                 <Deslizador
@@ -459,7 +482,20 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
               <span className="marca">{datos.orientacionEjes ? '✓' : '·'}</span>
               <span className="nombre">ejes declarados</span>
               <span className="detalle">
-                {datos.orientacionEjes ?? 'no los declara · XYZ como Gyroflow'}
+                {datos.orientacionEjes
+                  ? cadenaComoGyroflow(datos.orientacionEjes, datos.fuente) === datos.orientacionEjes
+                    ? datos.orientacionEjes
+                    : `${datos.orientacionEjes} · ${cadenaComoGyroflow(datos.orientacionEjes, datos.fuente)} como Gyroflow`
+                  : 'no los declara · XYZ como Gyroflow'}
+              </span>
+            </li>
+            <li className="hay">
+              <span className="marca">{datos.tiempos ? '✓' : '·'}</span>
+              <span className="nombre">tiempos del cuadro</span>
+              <span className="detalle">
+                {datos.tiempos
+                  ? `retardo ${(datos.tiempos.retardoDelCuadro * 1000).toFixed(0)} ms · lectura ${(datos.tiempos.tiempoDeLectura * 1000).toFixed(1)} ms`
+                  : 'no los escribe · el desfase va a mano'}
               </span>
             </li>
             <li className="hay">

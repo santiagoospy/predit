@@ -112,6 +112,16 @@ export function mapeoDesdeOrientacion(declarada: string, fuente: FuenteGiro = 'g
 }
 
 /**
+ * La cadena como la ve Gyroflow despues de su normalizacion, para mostrarla
+ * junto a la declarada: en Sony cambia (Xyz -> yXZ), en GoPro es la misma.
+ */
+export function cadenaComoGyroflow(declarada: string, fuente: FuenteGiro): string {
+  const letras = declarada.trim();
+  if (letras.length !== 3) return letras;
+  return fuente === 'sony' ? normalizarSony(letras) : letras;
+}
+
+/**
  * Lo que telemetry-parser le hace a la cadena de Sony antes de usarla:
  * intercambia las dos primeras letras e invierte el signo de la tercera.
  */
@@ -335,6 +345,23 @@ export interface Opciones {
    * original. Por defecto se endereza.
    */
   rectificar?: boolean;
+  /**
+   * Cuanto despues del timestamp del cuadro se expuso su fila del medio, en
+   * segundos (ver TiemposCuadro en tipos.ts). Sony lo escribe (~43 ms a 25p,
+   * medido +48 contra el video en una ZV-E10 II); es la parte del desfase que
+   * se SABE, y `desfase` queda para el ajuste fino. Defecto 0.
+   */
+  retardoDelCuadro?: number;
+  /**
+   * El obturador rodante: cuanto tarda el sensor en leerse de arriba a abajo,
+   * en segundos. Con esto la correccion es distinta en cada fila: la de
+   * arriba se expuso medio tiempo de lectura ANTES del centro y la de abajo
+   * medio DESPUES. Sin esto el temblor queda corregido en el medio del cuadro
+   * y no arriba ni abajo (medido: 0.9 px de residuo arriba contra 2.1 abajo;
+   * con la correccion por fila, 0.7 / 1.0). 0 o ausente = obturador global,
+   * una sola correccion por cuadro.
+   */
+  tiempoDeLectura?: number;
 }
 
 /**
@@ -350,13 +377,20 @@ export interface Opciones {
  * Los pixeles de `lente` son de la imagen a resolucion completa (`ancho` x
  * `alto`); el shader normaliza, asi la misma correccion sirve para el preview
  * chico y para el export.
+ *
+ * Con obturador rodante (`tiempoDeLectura`), `uv` / `rotacion` son los de la
+ * PRIMERA fila y `uvAbajo` / `rotacionAbajo` los de la ULTIMA: el shader
+ * interpola linealmente entre las dos por la fila de la ENTRADA (primero con
+ * la fila de salida, y una segunda vez con la fila de entrada que resulto).
+ * Sin obturador rodante, `uv` / `rotacion` son los del centro y no hay abajo.
  */
 export type Muestreo =
-  | { tipo: 'matriz'; uv: number[] }
+  | { tipo: 'matriz'; uv: number[]; uvAbajo?: number[] }
   | {
       tipo: 'lente';
       /** La rotacion de muestreo, 3x3 por filas, en el marco de la camara. */
       rotacion: number[];
+      rotacionAbajo?: number[];
       /** La focal de la salida, ya con el zoom. */
       focalSalida: number;
       /** Si la salida es rectilinea (true) o tambien ojo de pez (false). */
@@ -392,8 +426,9 @@ export interface Estabilizacion {
   /**
    * El muestreo real como funcion: de un pixel de la salida al pixel de la
    * entrada, a resolucion completa. Con lente pasa por el modelo del ojo de
-   * pez; sin lente es la matriz. Es la referencia que reproduce el shader, y
-   * lo que usan el banco offline y los tests.
+   * pez; sin lente es la matriz; con obturador rodante elige la correccion
+   * por la fila de entrada del pixel. Es la referencia que reproduce el
+   * shader, y lo que usan el banco offline y los tests.
    */
   puntoEn: (segundo: number) => (x: number, y: number) => [number, number];
   /** Cuanto se agranda la imagen, ya con el tope aplicado. */
@@ -437,8 +472,7 @@ export interface Estabilizacion {
  * y se lo vuelve a proyectar a pixel. El zoom entra achicando la focal del lado
  * de la salida, que es lo mismo que acercar la camara virtual.
  */
-function matrizDeMuestreo(q: Quat, o: Opciones, zoom: number): number[] {
-  const r = aMatriz(q);
+function matrizDeMuestreo(r: number[], o: Opciones, zoom: number): number[] {
   const cx = o.ancho / 2;
   const cy = o.alto / 2;
   const fEntrada = o.focalPx;
@@ -481,8 +515,7 @@ function aplicar(m: number[], x: number, y: number): [number, number] {
  * proyecta con el modelo del ojo de pez al pixel de la imagen original. Es la
  * misma cadena que hace el shader, y la que hace Gyroflow.
  */
-function muestreoConLente(q: Quat, o: Opciones, lente: PerfilLente, zoom: number) {
-  const r = aMatriz(q);
+function muestreoConLente(r: number[], o: Opciones, lente: PerfilLente, zoom: number) {
   const cx = o.ancho / 2;
   const cy = o.alto / 2;
   const f = o.focalPx * zoom;
@@ -509,11 +542,80 @@ function muestreoConLente(q: Quat, o: Opciones, lente: PerfilLente, zoom: number
   };
 }
 
-/** El muestreo de una correccion, con lente si hay y con la matriz si no. */
-function muestreador(q: Quat, o: Opciones, zoom: number): (x: number, y: number) => [number, number] {
-  if (o.lente) return muestreoConLente(q, o, o.lente, zoom);
-  const m = matrizDeMuestreo(q, o, zoom);
-  return (x, y) => aplicar(m, x, y);
+/**
+ * Algo por fila del cuadro: lo de la primera fila y, con obturador rodante,
+ * lo de la ultima. Sin obturador rodante `arriba` es lo del centro y `abajo`
+ * es null.
+ */
+interface PorFila<T> {
+  arriba: T;
+  abajo: T | null;
+}
+
+/** La correccion de un instante: una rotacion, o una por extremo del cuadro. */
+type Correccion = PorFila<Quat>;
+
+type Punto = (x: number, y: number) => [number, number];
+
+/** Interpola dos matrices 3x3 elemento a elemento. */
+function mezclar(a: number[], b: number[], t: number): number[] {
+  const m = new Array<number>(9);
+  for (let i = 0; i < 9; i++) m[i] = a[i]! + (b[i]! - a[i]!) * t;
+  return m;
+}
+
+const aRotaciones = (c: Correccion): PorFila<number[]> => ({
+  arriba: aMatriz(c.arriba),
+  abajo: c.abajo ? aMatriz(c.abajo) : null,
+});
+
+/** La correccion con una ganancia de 0 a 1 aplicada a las dos filas. */
+const conGanancia = (c: Correccion, g: number): Correccion => ({
+  arriba: slerp(IDENTIDAD, c.arriba, g),
+  abajo: c.abajo ? slerp(IDENTIDAD, c.abajo, g) : null,
+});
+
+/** La rotacion del centro del cuadro, para el diagnostico. */
+const rotacionCentral = (c: Correccion): Quat => (c.abajo ? normalizar(slerp(c.arriba, c.abajo, 0.5)) : c.arriba);
+
+/**
+ * El muestreo de una correccion, con lente si hay y con la matriz si no.
+ *
+ * Con obturador rodante la correccion depende de la fila en que se LEYO el
+ * pixel, que es la fila de la entrada, y esa no se conoce hasta muestrear.
+ * Se hace lo que hace Gyroflow: primero con la fila de salida, y una segunda
+ * vez con la fila de entrada que dio la primera. Entre las dos filas se
+ * interpola linealmente; a 300 grados por segundo la rotacion entre la fila de
+ * arriba y la de abajo es de 5 grados, y ahi la interpolacion lineal de la
+ * matriz se aparta menos del 0.5%. Sin lente se interpolan las homografias
+ * en pixeles (es lo mismo que interpolarlas en UV, porque el cambio de
+ * espacio es lineal), que es exactamente lo que hace el shader.
+ */
+function muestreador(rot: PorFila<number[]>, o: Opciones, zoom: number): Punto {
+  const conRotacion = (r: number[]): Punto => {
+    if (o.lente) return muestreoConLente(r, o, o.lente, zoom);
+    const m = matrizDeMuestreo(r, o, zoom);
+    return (x, y) => aplicar(m, x, y);
+  };
+  if (!rot.abajo) return conRotacion(rot.arriba);
+
+  let porFila: (fila01: number) => Punto;
+  if (o.lente) {
+    const abajo = rot.abajo;
+    porFila = (f) => conRotacion(mezclar(rot.arriba, abajo, f));
+  } else {
+    const mArriba = matrizDeMuestreo(rot.arriba, o, zoom);
+    const mAbajo = matrizDeMuestreo(rot.abajo, o, zoom);
+    porFila = (f) => {
+      const m = mezclar(mArriba, mAbajo, f);
+      return (x, y) => aplicar(m, x, y);
+    };
+  }
+  const fila = (y: number) => Math.min(1, Math.max(0, y / o.alto));
+  return (x, y) => {
+    const [, py] = porFila(fila(y))(x, y);
+    return porFila(fila(py))(x, y);
+  };
 }
 
 /**
@@ -545,8 +647,8 @@ const MARGEN_DE_GANANCIA = 0.002;
 /** En cuantos tramos se parte cada lado al comprobar el borde con lente. */
 const PUNTOS_POR_LADO = 12;
 
-function esquinasDentro(q: Quat, o: Opciones, zoom: number, margen = 0): boolean {
-  const punto = muestreador(q, o, zoom);
+function esquinasDentro(c: Correccion, o: Opciones, zoom: number, margen = 0): boolean {
+  const punto = muestreador(aRotaciones(c), o, zoom);
   const w = o.ancho;
   const h = o.alto;
   const borde: [number, number][] = [[0, 0], [w, 0], [0, h], [w, h]];
@@ -568,12 +670,12 @@ function esquinasDentro(q: Quat, o: Opciones, zoom: number, margen = 0): boolean
  * La ganancia mas alta, de 0 a 1, con la que UNA correccion entra en el
  * recorte disponible. 1 si entra entera.
  */
-function gananciaQueEntra(correccion: Quat, o: Opciones, zoom: number): number {
+function gananciaQueEntra(correccion: Correccion, o: Opciones, zoom: number): number {
   // Si entra entera sin margen, es 1 y punto: asi el zoom "ideal" da ganancia
   // exactamente 1. El margen se exige solo cuando hay que recortar la ganancia.
   if (esquinasDentro(correccion, o, zoom)) return 1;
   const margen = MARGEN_DE_GANANCIA * Math.min(o.ancho, o.alto);
-  const entra = (g: number) => esquinasDentro(slerp(IDENTIDAD, correccion, g), o, zoom, margen);
+  const entra = (g: number) => esquinasDentro(conGanancia(correccion, g), o, zoom, margen);
   let bajo = 0;
   let alto = 1;
   for (let i = 0; i < 16; i++) {
@@ -585,7 +687,7 @@ function gananciaQueEntra(correccion: Quat, o: Opciones, zoom: number): number {
 }
 
 /** El zoom mas chico que evita los bordes negros para UNA correccion. */
-function zoomNecesario(correccion: Quat, o: Opciones): number {
+function zoomNecesario(correccion: Correccion, o: Opciones): number {
   const alcanza = (zoom: number): boolean => esquinasDentro(correccion, o, zoom);
   if (alcanza(1)) return 1;
   let bajo = 1;
@@ -765,11 +867,13 @@ function aEspacioUv(m: number[], o: Opciones): number[] {
  * cadena (el espejo vertical de la textura lo hace el shader en pixeles, asi
  * que aca no hay que conjugar nada); sin lente, la homografia en UV.
  */
-function armarMuestreo(q: Quat, o: Opciones, zoom: number): Muestreo {
+function armarMuestreo(c: Correccion, o: Opciones, zoom: number): Muestreo {
+  const rot = aRotaciones(c);
   if (o.lente) {
     return {
       tipo: 'lente',
-      rotacion: aMatriz(q),
+      rotacion: rot.arriba,
+      ...(rot.abajo ? { rotacionAbajo: rot.abajo } : {}),
       focalSalida: o.focalPx * zoom,
       rectificar: o.rectificar ?? true,
       ancho: o.ancho,
@@ -777,7 +881,11 @@ function armarMuestreo(q: Quat, o: Opciones, zoom: number): Muestreo {
       lente: o.lente,
     };
   }
-  return { tipo: 'matriz', uv: aEspacioUv(matrizDeMuestreo(q, o, zoom), o) };
+  return {
+    tipo: 'matriz',
+    uv: aEspacioUv(matrizDeMuestreo(rot.arriba, o, zoom), o),
+    ...(rot.abajo ? { uvAbajo: aEspacioUv(matrizDeMuestreo(rot.abajo, o, zoom), o) } : {}),
+  };
 }
 
 /**
@@ -796,8 +904,11 @@ export function prepararEstabilizacion(
   const reales = integrar(muestras, o.mapeo);
   const suaves = suavizar(reales, o.suavidad, o.velocidadDeReferencia ?? 0);
 
-  const correccionEn = (segundo: number): Quat => {
-    const t = segundo + o.desfase;
+  const lectura = o.tiempoDeLectura ?? 0;
+  const correccionEn = (segundo: number): Correccion => {
+    // El instante del centro del cuadro: el timestamp, mas lo que la camara
+    // dice que tardo en exponerlo, mas el ajuste fino del usuario.
+    const tCentro = segundo + (o.retardoDelCuadro ?? 0) + o.desfase;
     /*
      * La rotacion con la que hay que MUESTREAR, que no es la misma que la
      * correccion "conceptual" y el orden importa.
@@ -809,8 +920,17 @@ export function prepararEstabilizacion(
      *
      * Invertir este producto -o darlo vuelta- no corrige menos: corrige para el
      * otro lado, y la imagen tiembla el doble en vez de la mitad.
+     *
+     * Con obturador rodante, la camara REAL se evalua en el instante en que se
+     * leyo la fila (arriba medio tiempo de lectura antes del centro, abajo
+     * medio despues) y la camara virtual en el centro del cuadro, que es una
+     * sola imagen: es lo que hace Gyroflow en frame_transform.rs.
      */
-    return normalizar(multiplicar(inverso(orientacionEn(reales, t)), orientacionEn(suaves, t)));
+    const suave = orientacionEn(suaves, tCentro);
+    const en = (fila01: number): Quat =>
+      normalizar(multiplicar(inverso(orientacionEn(reales, tCentro + lectura * (fila01 - 0.5))), suave));
+    if (!(lectura > 0)) return { arriba: en(0.5), abajo: null };
+    return { arriba: en(0), abajo: en(1) };
   };
 
   /*
@@ -842,13 +962,15 @@ export function prepararEstabilizacion(
   const gananciaEn = (segundo: number) => valorEn(tiempos, ganancias, segundo);
 
   let maximo = 0;
-  for (const q of correcciones) {
-    maximo = Math.max(maximo, 2 * Math.acos(Math.min(1, Math.abs(q[0]))));
+  for (const c of correcciones) {
+    for (const q of [c.arriba, c.abajo]) {
+      if (q) maximo = Math.max(maximo, 2 * Math.acos(Math.min(1, Math.abs(q[0]))));
+    }
   }
 
-  const aplicadaEn = (segundo: number): Quat =>
-    slerp(IDENTIDAD, correccionEn(segundo), gananciaEn(segundo));
-  const matriz = (segundo: number) => matrizDeMuestreo(aplicadaEn(segundo), o, zoom);
+  const aplicadaEn = (segundo: number): Correccion => conGanancia(correccionEn(segundo), gananciaEn(segundo));
+  // La matriz de diagnostico es la del centro del cuadro.
+  const matriz = (segundo: number) => matrizDeMuestreo(aMatriz(rotacionCentral(aplicadaEn(segundo))), o, zoom);
 
   const promedio = ganancias.length > 0 ? ganancias.reduce((a, b) => a + b, 0) / ganancias.length : 1;
   const aGrados = 180 / Math.PI;
@@ -857,7 +979,7 @@ export function prepararEstabilizacion(
     matrizEn: matriz,
     matrizUvEn: (segundo) => aEspacioUv(matriz(segundo), o),
     muestreoEn: (segundo) => armarMuestreo(aplicadaEn(segundo), o, zoom),
-    puntoEn: (segundo) => muestreador(aplicadaEn(segundo), o, zoom),
+    puntoEn: (segundo) => muestreador(aRotaciones(aplicadaEn(segundo)), o, zoom),
     zoom,
     zoomIdeal,
     ganancia: promedio,
@@ -868,7 +990,7 @@ export function prepararEstabilizacion(
     correccionEn: (segundo) => {
       // Para angulos chicos, cada componente vectorial del cuaternion es la
       // mitad del giro alrededor de ese eje.
-      const q = aplicadaEn(segundo);
+      const q = rotacionCentral(aplicadaEn(segundo));
       const signo = q[0] < 0 ? -1 : 1;
       return {
         pitch: 2 * Math.asin(Math.max(-1, Math.min(1, q[1] * signo))) * aGrados,
@@ -905,12 +1027,13 @@ export function estabilizacionFija(
       1,
     ),
   );
-  const matriz = () => matrizDeMuestreo(q, completa, 1);
+  const c: Correccion = { arriba: q, abajo: null };
+  const matriz = () => matrizDeMuestreo(aMatriz(q), completa, 1);
   return {
     matrizEn: matriz,
     matrizUvEn: () => aEspacioUv(matriz(), completa),
-    muestreoEn: () => armarMuestreo(q, completa, 1),
-    puntoEn: () => muestreador(q, completa, 1),
+    muestreoEn: () => armarMuestreo(c, completa, 1),
+    puntoEn: () => muestreador(aRotaciones(c), completa, 1),
     zoom: 1,
     zoomIdeal: 1,
     ganancia: 1,

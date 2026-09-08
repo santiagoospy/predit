@@ -95,7 +95,7 @@ export class LutRenderer {
       'uLutConv', 'uHasConv', 'uSizeConv', 'uDomMinConv', 'uDomMaxConv',
       'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook',
       'uLift', 'uGamma', 'uGain',
-      'uEstab', 'uHayEstab',
+      'uEstab', 'uHayEstab', 'uHayLectura', 'uEstabAbajo',
       'uHayLente', 'uLenteF', 'uLenteC', 'uLenteK', 'uFocalSalida', 'uRectificar', 'uTamano',
     ];
     for (const name of uniformNames) {
@@ -333,6 +333,10 @@ export class LutRenderer {
     gl.uniform1i(this.loc['uHayEstab']!, muestreo?.tipo === 'matriz' ? 1 : 0);
     gl.uniform1i(this.loc['uHayLente']!, muestreo?.tipo === 'lente' ? 1 : 0);
     if (!muestreo) return;
+    // Con obturador rodante llega tambien la matriz de la ultima fila.
+    const abajo = muestreo.tipo === 'matriz' ? muestreo.uvAbajo : muestreo.rotacionAbajo;
+    gl.uniform1i(this.loc['uHayLectura']!, abajo ? 1 : 0);
+    if (abajo) gl.uniformMatrix3fv(this.loc['uEstabAbajo']!, true, abajo);
     if (muestreo.tipo === 'matriz') {
       // true en el tercer argumento: transponer de filas a columnas.
       gl.uniformMatrix3fv(this.loc['uEstab']!, true, muestreo.uv);

@@ -132,6 +132,144 @@ describe('leerSony', () => {
   });
 });
 
+describe('ejes y tiempos de Sony', () => {
+  /**
+   * Una muestra con los tags de tiempo y de ejes como los escribe una
+   * ZV-E10 II a 25p, mas un dato de giroscopio para que cuente.
+   */
+  function conTiempos({
+    orientacion = 0x0530,
+    desfaseTicks = -2958,
+    desfaseUnidad = null as number | null,
+    primerCuadroUs = 40789,
+    exposicionUs = 12404,
+    lecturaUs = 16738 as number | null,
+    origenY = 0,
+    recorteAlto = 3347 * 16,
+    sensorAlto = 3348,
+    ternas = 2,
+  } = {}): ArrayBuffer {
+    const cuerpo: number[] = [];
+    const u16 = (v: number) => cuerpo.push((v >> 8) & 0xff, v & 0xff);
+    const i32 = (v: number) =>
+      cuerpo.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+
+    // Sensor en pixeles: 5952 x sensorAlto.
+    u16(0xe405);
+    u16(4);
+    u16(5952);
+    u16(sensorAlto);
+    // Recorte: unidad 16, origen (0, origenY), tamano (5951 x 3347) en 1/16 px.
+    u16(0xe408);
+    u16(4);
+    i32(16);
+    u16(0xe409);
+    u16(8);
+    i32(0);
+    i32(origenY);
+    u16(0xe40a);
+    u16(8);
+    i32(95215);
+    i32(recorteAlto);
+    // Tiempos del cuadro, en microsegundos.
+    u16(0xe40c);
+    u16(4);
+    i32(primerCuadroUs);
+    u16(0xe40d);
+    u16(4);
+    i32(exposicionUs);
+    if (lecturaUs !== null) {
+      u16(0xe40e);
+      u16(4);
+      i32(lecturaUs);
+    }
+    // Giroscopio: 2000 Hz, desfase del paquete, escala 65.5, ejes en dos bytes.
+    u16(0xe435);
+    u16(4);
+    i32(2000);
+    if (desfaseUnidad !== null) {
+      u16(0xe436);
+      u16(4);
+      i32(desfaseUnidad);
+    }
+    u16(0xe437);
+    u16(4);
+    i32(desfaseTicks);
+    u16(0xe439);
+    u16(4);
+    cuerpo.push(0x42, 0x83, 0x00, 0x00);
+    u16(0xe43a);
+    u16(2);
+    u16(orientacion);
+    u16(0xe43b);
+    u16(8 + ternas * 6);
+    i32(ternas);
+    i32(6);
+    for (let i = 0; i < ternas; i++) {
+      u16(131);
+      u16(0);
+      u16(0);
+    }
+
+    const bytes = new Uint8Array(0x1c + cuerpo.length);
+    bytes[1] = 0x1c;
+    bytes.set(cuerpo, 0x1c);
+    return bytes.buffer;
+  }
+
+  it('decodifica los ejes de los dos bytes como telemetry-parser', () => {
+    // Un nibble por posicion: 0=X 1=x 2=Y 3=y 4=Z 5=z.
+    expect(leerSony([{ bytes: conTiempos({ orientacion: 0x0530 }), segundo: 0 }]).orientacionEjes).toBe('Xyz'); // ZV-E10 II
+    expect(leerSony([{ bytes: conTiempos({ orientacion: 0x0420 }), segundo: 0 }]).orientacionEjes).toBe('XYZ'); // A7S III, A7C
+    expect(leerSony([{ bytes: conTiempos({ orientacion: 0x0241 }), segundo: 0 }]).orientacionEjes).toBe('xZY'); // RX0 II
+    expect(leerSony([{ bytes: conTiempos({ orientacion: 0x0152 }), segundo: 0 }]).orientacionEjes).toBe('Yzx'); // RX100 VII
+  });
+
+  it('un nibble que no es un eje deja los ejes sin declarar', () => {
+    expect(leerSony([{ bytes: conTiempos({ orientacion: 0x0f30 }), segundo: 0 }]).orientacionEjes).toBeNull();
+  });
+
+  it('corre las mediciones con el desfase del paquete, en microsegundos si no hay unidad', () => {
+    const { muestras } = leerSony([{ bytes: conTiempos({ desfaseTicks: -2958 }), segundo: 1 }]);
+    expect(muestras).toHaveLength(2);
+    expect(muestras[0]!.segundo).toBeCloseTo(1 - 0.002958, 6);
+    expect(muestras[1]!.segundo).toBeCloseTo(1 - 0.002958 + 1 / 2000, 6);
+  });
+
+  it('respeta la unidad del desfase cuando la camara la declara', () => {
+    // 1000 ticks por segundo: -3 ticks son -3 ms.
+    const { muestras } = leerSony([{ bytes: conTiempos({ desfaseTicks: -3, desfaseUnidad: 1000 }), segundo: 1 }]);
+    expect(muestras[0]!.segundo).toBeCloseTo(0.997, 6);
+  });
+
+  it('calcula el retardo del cuadro como Gyroflow: primer cuadro - exposicion/2 + lectura x centro', () => {
+    const { tiempos } = leerSony([{ bytes: conTiempos(), segundo: 0 }]);
+    // Recorte de 3347 px desde el origen 0 en un sensor de 3348: centro 0.49985.
+    const centro = 3347 / 2 / 3348;
+    expect(tiempos?.retardoDelCuadro).toBeCloseTo((40789 - 12404 / 2 + 16738 * centro) / 1e6, 7);
+    expect(tiempos?.tiempoDeLectura).toBeCloseTo(0.016738, 7);
+  });
+
+  it('un recorte corrido mueve el centro del cuadro', () => {
+    // Origen en la fila 1000 (en 1/16 px: 16000) y 1000 px de alto en un sensor de 3348.
+    const { tiempos } = leerSony([
+      { bytes: conTiempos({ origenY: 16000, recorteAlto: 16000 }), segundo: 0 },
+    ]);
+    const centro = (1000 + 500) / 3348;
+    expect(tiempos?.retardoDelCuadro).toBeCloseTo((40789 - 12404 / 2 + 16738 * centro) / 1e6, 7);
+  });
+
+  it('sin tiempo de lectura el retardo es solo el de la exposicion y el obturador es global', () => {
+    const { tiempos } = leerSony([{ bytes: conTiempos({ lecturaUs: null }), segundo: 0 }]);
+    expect(tiempos?.retardoDelCuadro).toBeCloseTo((40789 - 12404 / 2) / 1e6, 7);
+    expect(tiempos?.tiempoDeLectura).toBe(0);
+  });
+
+  it('sin los tags de tiempo no inventa tiempos', () => {
+    expect(leerSony([{ bytes: muestraSony([[100, 0, 0]]), segundo: 0 }]).tiempos).toBeNull();
+  });
+});
+
 describe('leerGoPro', () => {
   it('divide por el SCAL y reparte los tiempos en el tramo de la muestra', () => {
     const { muestras } = leerGoPro([

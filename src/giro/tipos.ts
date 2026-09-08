@@ -96,6 +96,27 @@ export function focalPxDesdeMm(mm: number, sensorAnchoMm: number, anchoPx: numbe
   return (mm / sensorAnchoMm) * anchoPx;
 }
 
+/**
+ * Cuando se expuso cada cuadro respecto de su timestamp, si la camara lo dice.
+ *
+ * El timestamp de un cuadro es un numero del contenedor; la imagen se expuso
+ * en algun momento cerca de el, y "cerca" son decenas de milisegundos: en una
+ * Sony a 25p el centro del cuadro se expone unos 43 ms DESPUES del timestamp.
+ * Un temblor de caminar tiene 5 a 10 Hz, asi que 43 ms es media fase: sin
+ * este dato la correccion llega tarde y suma temblor en vez de sacarlo.
+ *
+ * Y dentro del cuadro las filas no se exponen todas a la vez: el sensor se lee
+ * de arriba a abajo en `tiempoDeLectura` segundos (obturador rodante), asi
+ * que la fila de arriba es medio tiempo de lectura anterior al centro y la de
+ * abajo medio posterior.
+ */
+export interface TiemposCuadro {
+  /** Cuanto despues del timestamp del cuadro se expuso su fila del medio, en segundos. */
+  retardoDelCuadro: number;
+  /** Cuanto tarda el sensor en leerse de arriba a abajo, en segundos. 0 = obturador global. */
+  tiempoDeLectura: number;
+}
+
 /** El giroscopio de un clip, listo para dibujar o para estabilizar. */
 export interface DatosGiro {
   fuente: FuenteGiro;
@@ -124,6 +145,8 @@ export interface DatosGiro {
   orientacionEjes: string | null;
   /** El modelo, tal como lo escribe la camara. */
   modelo: string | null;
+  /** Cuando se expuso el cuadro respecto de su timestamp. Sony lo escribe; GoPro no. */
+  tiempos: TiemposCuadro | null;
 }
 
 /** Por que no se pudo leer el giroscopio. Se muestra tal cual al usuario. */

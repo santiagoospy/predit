@@ -12,7 +12,7 @@
 import { leerGoPro } from './gopro';
 import { leerMuestras, pistasDeMetadata, type PistaMeta } from './mp4';
 import { leerSony } from './sony';
-import type { DatosGiro, MuestraGiro, Optica, SinGiro } from './tipos';
+import type { DatosGiro, MuestraGiro, Optica, SinGiro, TiemposCuadro } from './tipos';
 
 /** Los formatos de pista que sabemos leer. */
 const FORMATOS = { gpmd: 'gopro', rtmd: 'sony' } as const;
@@ -82,11 +82,14 @@ export async function leerGiroscopio(
     let claves: string[] = [];
     let orientacionEjes: string | null = null;
     let modelo: string | null = null;
+    // Sony dice cuando se expuso el cuadro respecto de su timestamp; GoPro no.
+    let tiempos: TiemposCuadro | null = null;
     if (fuente === 'sony') {
       const leido = leerSony(crudas, anchoDelVideo);
       muestras = leido.muestras;
       optica = leido.optica;
       orientacionEjes = leido.orientacionEjes;
+      tiempos = leido.tiempos;
     } else {
       // GoPro guarda su propia calibracion de fabrica en el archivo, asi que de
       // aca sale tanto la focal como el modelo del ojo de pez.
@@ -115,6 +118,7 @@ export async function leerGiroscopio(
       claves,
       orientacionEjes,
       modelo,
+      tiempos,
     };
   } catch (e) {
     return { motivo: `No se pudo interpretar la pista: ${comoTexto(e)}`, pistas: nombres };

@@ -4,7 +4,7 @@ Documento de traspaso. Lo que sigue es lo que costó averiguar, no lo que se lee
 en el código: los formatos de cámara, las convenciones, y sobre todo los ocho
 bugs que ya se encontraron, con su síntoma, para no volver a caer en ellos.
 
-Estado al 2026-09-08 (después de `10e8cd4`, sin commitear). 300 tests en verde.
+Estado al 2026-09-08 (después de `058ef12`, sin commitear). 315 tests en verde.
 
 ---
 
@@ -16,6 +16,10 @@ Estado al 2026-09-08 (después de `10e8cd4`, sin commitear). 300 tests en verde.
 - Las curvas de diagnóstico en la pestaña *clip*.
 - La óptica: focal de Sony desde la metadata; campo de visión a mano para GoPro.
 - La corrección aplicada al visor en vivo, con interruptor y deslizadores.
+- **Sony verificada contra el video (2026-09-08):** ejes decodificados del
+  tag de dos bytes, reloj del paquete, retardo del cuadro y obturador rodante,
+  todo leído de la metadata y medido contra un clip de ZV-E10 II (sección
+  «Sony: el reloj y el obturador rodante», abajo).
 
 **Falta:**
 
@@ -43,7 +47,7 @@ Todo en `src/giro/`:
 | Archivo | Qué resuelve |
 |---|---|
 | `mp4.ts` | Camina las cajas del MP4 hasta la pista de metadata. **Necesario** porque mediabunny solo expone video, audio y subtítulos. |
-| `sony.ts` | Parser RTMD: giroscopio, escala, ejes y óptica. |
+| `sony.ts` | Parser RTMD: giroscopio, escala, ejes (dos bytes), reloj del paquete, tiempos del cuadro y óptica. |
 | `gopro.ts` | Parser GPMF: giroscopio, unidades, ejes, modelo y calibración de lente. |
 | `leer.ts` | Elige el parser por el formato de la pista (`rtmd` / `gpmd`). |
 | `tipos.ts` | `MuestraGiro`, `DatosGiro`, `Optica`, `ModeloRadial`. |
@@ -77,13 +81,17 @@ documentación pública de Sony:
 | Tag | Qué es |
 |---|---|
 | `0xe435` | Frecuencia del giroscopio (Hz) |
+| `0xe436` / `0xe437` | Desfase del paquete de giroscopio respecto del timestamp del cuadro (ticks de 1/`0xe436` s; sin `0xe436`, microsegundos). ZV-E10 II: −2.96 ms |
 | `0xe438` | Unidad de la escala: `false` = °/s, `true` = rad/s |
 | `0xe439` | Escala (divisor) |
-| `0xe43a` | Orientación de los ejes |
+| `0xe43a` | Orientación de los ejes, **en dos bytes** (bug 10): tres nibbles, `0=X 1=x 2=Y 3=y 4=Z 5=z` |
 | `0xe43b` | Los datos: cantidad, largo (6), y ternas de int16 |
-| `0xe410` | Posición del lente; la **z** es la focal en nm — grupo `LensOSS` |
+| `0xe43d` / `0xe43e` | Sesgo de cero del giroscopio y su validez (bit 15). No se usa: ~1 °/s, el suavizado lo sigue como un paneo lento |
+| `0xe40c` / `0xe40d` / `0xe40e` | Primer cuadro, exposición y **tiempo de lectura** (obturador rodante), en µs — grupo `Imager` |
+| `0xe405` / `0xe409` / `0xe40a` | Sensor en px, origen y tamaño del recorte — grupo `Imager` |
+| `0xe410` | Posición del lente; la **z** es la focal en nm — grupo `LensOSS`. Un lente manual no lo escribe |
 | `0xe407` | Tamaño del píxel — grupo `Imager` |
-| `0xe40a` | Recorte del sensor — grupo `Imager` |
+| `0xe420`–`0xe425` | Tabla de distorsión del lente (Gyroflow la convierte en un spline, `distortion_models/sony.rs`). El clip de referencia no la trae (lente manual); **no está implementada** |
 
 **El detalle que importa:** la focal la escribe el LENTE, el tamaño del píxel y
 el recorte los escribe la CÁMARA. Con un lente manual falta solo la focal.
@@ -466,6 +474,76 @@ cosas que conviene saber:
   entrega el cuadro SIN rotar, asi que con rotacion entrarian girados uno
   respecto del otro. GoPro y Sony en horizontal son rotacion 0.
 
+### 10. Los ejes de Sony vienen en dos bytes → «con Sony estabiliza al revés en horizontal»
+
+El tag `0xe43a` no son tres letras: son **dos bytes**, tres nibbles con
+`0=X 1=x 2=Y 3=y 4=Z 5=z` (así lo lee `read_orientation` en telemetry-parser).
+El parser pedía `largo >= 3`, lo descartaba, y el panel caía al defecto `XYZ`
+→ mapeo `YXz`. La ZV-E10 II escribe `0x0530` = `Xyz`, que normalizado es
+`yXZ`: respecto del defecto, **yaw y roll con el signo al revés**. La A7S III
+y la A7C escriben `0x0420` = `XYZ`, así que en esas el defecto coincidía y el
+bug no se veía.
+
+*Cómo se encontró:* el `.gyroflow` del usuario decía `imu_orientation: "yXZ"`
+y nuestro parser decía «no los declara». Volcando los tags del RTMD apareció
+el largo 2. Medido con `_calibrar` sobre el clip: el defecto de la app da
+correlación **−0.26 / −0.16** con el movimiento real; la cadena decodificada,
+**0.96 / 0.99 / 0.99**.
+
+### Sony: el reloj y el obturador rodante (2026-09-08)
+
+Sony escribe **cuándo** se expuso el cuadro, y Gyroflow lo usa
+(`gyro_source/sony.rs`, `get_time_offset` y `retime_imu_from_packets`). Lo que
+dice el clip de referencia (`zveii_aira20260904_2047.MP4`, ZV-E10 II, 4K 25p,
+lente manual, SteadyShot apagado):
+
+| | valor | de dónde |
+|---|---|---|
+| paquete de giro | −2.958 ms respecto del timestamp del cuadro | `0xe437` |
+| primer cuadro | 40.789 ms | `0xe40c` |
+| exposición | 12.404 ms (1/81 s) | `0xe40d` |
+| lectura del sensor | **16.738 ms**, de arriba a abajo | `0xe40e` |
+
+Con eso, la medición i del cuadro N cae en `ts(N) − 2.958 ms + i/2000`, y el
+**centro** del cuadro N se expuso en `ts(N) + 40.789 − 12.404/2 + 16.738 × 0.5
+≈ ts(N) + 43 ms`. Eso es `TiemposCuadro` (`tipos.ts`): `retardoDelCuadro` y
+`tiempoDeLectura`. `Opciones` los recibe (`retardoDelCuadro`,
+`tiempoDeLectura`) y el deslizador `desfase` queda como ajuste fino.
+
+**Por qué importa tanto:** el temblor de caminar tiene 5–10 Hz; 43 ms es media
+fase. Medido con `_verificar` (temblor residual en px de 4K, suavidad 0.3):
+sin estabilizar 11.5 / 20.4; con los ejes bien pero desfase 0, **11.5 / 19.7**
+(no saca nada); con +44 ms, **1.3 / 2.1**. Con el parser actual y el retardo
+de la metadata, el ajuste fino óptimo del deslizador es **0 a +2 ms**: los
+valores de la cámara alcanzan solos.
+
+**El obturador rodante.** Con una sola corrección por cuadro, la franja de
+arriba quedaba en 0.9 px y la de abajo en 2.1 (suavidad 1): la corrección era
+la correcta para una fila y tarde o temprano para las demás, que es el
+«jello». Con una rotación por extremo del cuadro e interpolación lineal por la
+fila de ENTRADA (dos pases, como Gyroflow), las franjas dan 0.76 / 1.00 / 1.12
+y la rotación residual baja de 0.043° a 0.022°. Es lo que hace `muestreador`
+en `estabilizar.ts`, `estabEn(fila)` en el shader y `Muestreo.uvAbajo` /
+`rotacionAbajo`. La camára REAL se evalúa en el instante de la fila y la
+virtual (suave) en el centro del cuadro, igual que `frame_transform.rs`.
+
+**La focal del lente manual** la midió el banco: pendiente del flujo contra el
+giroscopio, ~4160 px = **24 mm** en este sensor de 22.38 mm. Es lo que hay que
+cargar en «lente manual · mm».
+
+Cómo se corrió (los `.raw` salen de ffmpeg a 240×135 gris):
+
+```
+LOG=... CLIP=C:/.../zveii_aira20260904_2047.MP4 SEG=.../sony.raw FUENTE=sony \
+  ANCHO=3840 ALTO=2160 W=240 H=135 FOV=60 EJES=Xyz npx vitest run src/giro/_calibrar.test.ts
+LOG=... CLIP=... SEG=... FUENTE=sony ANCHO=3840 ALTO=2160 W=240 H=135 EJES=Xyz FOCAL=4160 \
+  SUAV=1 RETARDO=0.04295 DESF=0,0.002 LECTURA=0.01674 FRANJAS=1 npx vitest run src/giro/_verificar.test.ts
+```
+
+Lo que NO se hizo y queda anotado: la tabla de distorsión del lente de Sony
+(`0xe421`, solo con lentes con contactos), los datos de IBIS/OIS (`0xe5xx`,
+vienen en `ff` con SteadyShot apagado), y el sesgo de cero (`0xe43d`).
+
 **Plan B si sigue sin salir:** GoPro escribe `CORI`, la orientación ya integrada
 y fusionada por la cámara. Usarla en vez de integrar el giroscopio saltea todo
 el problema de ejes y además no acumula deriva. `GRAV` (gravedad) permitiría
@@ -526,7 +604,8 @@ Los números del panel y qué detecta cada uno:
 | pico ±°/s (en la curva) | A mano difícilmente pase de 200 en Sony. ~500 en GoPro caminando. Si da 30000, falta aplicar la escala. |
 | perfil de lente | El perfil embebido que corresponde al formato, o «ninguno». Sin perfil no hay casillas de lente y se usa el agujero de alfiler. |
 | focal | De dónde salió: *del perfil*, *de la cámara*, *a mano* o *del campo a ojo*. |
-| ejes declarados | La cadena como la armaría Gyroflow (`MTRX` u `ORIN`+`ORIO`), o «XYZ como Gyroflow» si la cámara no la escribe completa. |
+| ejes declarados | La cadena como la armaría Gyroflow (`MTRX` u `ORIN`+`ORIO`), o «XYZ como Gyroflow» si la cámara no la escribe completa. En Sony, la declarada y la normalizada (`Xyz · yXZ como Gyroflow`). |
+| tiempos del cuadro | Sony: `retardo 43 ms · lectura 16.7 ms`. Si dice «no los escribe», el desfase va a mano (GoPro: +10 ms medido). |
 | entero en el X% del clip | Qué parte del clip se corrige (casi) completa. Bajo = hay golpes o paneos que piden más que el tope. |
 | ahora: pitch · yaw · roll · ganancia | La corrección en el cabezal. Tienen que moverse con el temblor. |
 | prueba: girar | Diagnóstico: un yaw fijo. Si la imagen no se corre, la matriz no llega al shader. |

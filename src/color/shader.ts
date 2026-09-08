@@ -45,6 +45,23 @@ uniform mat3 uEstab;
 uniform bool uHayEstab;
 
 /**
+ * El obturador rodante (ver Opciones.tiempoDeLectura en giro/estabilizar.ts).
+ * El sensor se lee de arriba a abajo, asi que cada fila de la ENTRADA se
+ * expuso en un instante distinto y tiene su propia correccion. Con
+ * uHayLectura, uEstab es la de la primera fila y uEstabAbajo la de la ultima;
+ * entre las dos se interpola linealmente por la fila de entrada. Como esa fila
+ * no se conoce hasta muestrear, se hace dos veces: con la fila de salida, y
+ * con la fila de entrada que dio la primera (igual que Gyroflow).
+ */
+uniform bool uHayLectura;
+uniform mat3 uEstabAbajo;
+
+/** La matriz de muestreo de una fila (0 = arriba, 1 = abajo). */
+mat3 estabEn(float fila) {
+  return uHayLectura ? uEstab + (uEstabAbajo - uEstab) * fila : uEstab;
+}
+
+/**
  * El modelo del lente, cuando hay perfil (ver giro/lente.ts, que es la
  * referencia de estas cuentas). Con lente, uEstab no es la homografia sino la
  * ROTACION de muestreo, y la cadena se hace entera aca, en pixeles de la
@@ -110,7 +127,13 @@ vec2 muestreoConLente(vec2 uv) {
     // La salida es el mismo ojo de pez, con la focal escalada por el zoom.
     v = lenteDesproyectar(px, vec2(uFocalSalida, uFocalSalida * uLenteF.y / uLenteF.x));
   }
-  vec2 q = lenteProyectar(uEstab * v);
+  // px esta en pixeles con la y hacia abajo: fila 0 es arriba.
+  float fila = uHayLectura ? clamp(px.y / uTamano.y, 0.0, 1.0) : 0.5;
+  vec2 q = lenteProyectar(estabEn(fila) * v);
+  if (uHayLectura) {
+    fila = clamp(q.y / uTamano.y, 0.0, 1.0);
+    q = lenteProyectar(estabEn(fila) * v);
+  }
   return vec2(q.x / uTamano.x, 1.0 - q.y / uTamano.y);
 }
 
@@ -162,7 +185,13 @@ void main() {
   if (uHayLente) {
     uv = muestreoConLente(vUv);
   } else if (uHayEstab) {
-    vec3 p = uEstab * vec3(vUv, 1.0);
+    // La V crece hacia arriba, asi que la fila (0 = arriba) es 1 - v.
+    float fila = uHayLectura ? 1.0 - vUv.y : 0.5;
+    vec3 p = estabEn(fila) * vec3(vUv, 1.0);
+    if (uHayLectura) {
+      fila = clamp(1.0 - p.y / p.z, 0.0, 1.0);
+      p = estabEn(fila) * vec3(vUv, 1.0);
+    }
     // La division de perspectiva: una rotacion de camara no es una traslacion
     // plana, y sin dividir por w los bordes quedarian corridos.
     uv = p.xy / p.z;

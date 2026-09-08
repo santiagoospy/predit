@@ -762,3 +762,95 @@ describe('estabilizacionFija', () => {
     expect(Math.abs(py - 540)).toBeLessThan(0.01);
   });
 });
+
+describe('los tiempos del cuadro', () => {
+  const base = {
+    suavidad: 0.5,
+    desfase: 0,
+    focalPx: 1000,
+    ancho: 1920,
+    alto: 1080,
+    mapeo: DIRECTO,
+    zoomMaximo: 4,
+  };
+  const cuadros = Array.from({ length: 76 }, (_, i) => i * 0.04);
+
+  /** Quieta, un golpe de yaw de 200 grados por segundo durante 0.1 s en t = 1, quieta. */
+  function golpe(): MuestraGiro[] {
+    return giro([0, 0, 0], 3).map((m) => (m.segundo >= 1 && m.segundo < 1.1 ? { ...m, y: 200 } : m));
+  }
+
+  /** Aplica una homografia 3x3 por filas a un punto, con la division de perspectiva. */
+  function homografia(m: number[], x: number, y: number): [number, number] {
+    const w = m[6]! * x + m[7]! * y + m[8]!;
+    return [(m[0]! * x + m[1]! * y + m[2]!) / w, (m[3]! * x + m[4]! * y + m[5]!) / w];
+  }
+
+  it('el retardo del cuadro corre el instante en que se mira el giroscopio', () => {
+    const sin = prepararEstabilizacion(golpe(), cuadros, base);
+    const con = prepararEstabilizacion(golpe(), cuadros, { ...base, retardoDelCuadro: 0.05 });
+    // Lo que sin retardo se ve en t = 1.05, con 50 ms de retardo se ve en t = 1.00.
+    expect(con.correccionEn(1.0).yaw).toBeCloseTo(sin.correccionEn(1.05).yaw, 2);
+    expect(con.correccionEn(1.2).yaw).toBeCloseTo(sin.correccionEn(1.25).yaw, 2);
+    expect(Math.abs(con.correccionEn(1.0).yaw)).toBeGreaterThan(0.5);
+  });
+
+  it('sin obturador rodante todas las filas se corrigen igual y no hay matriz de abajo', () => {
+    const e = prepararEstabilizacion(giro([0, 100, 0], 4), cuadros, { ...base, suavidad: 0.2 });
+    const punto = e.puntoEn(2);
+    const [xArriba] = punto(960, 0);
+    const [xAbajo] = punto(960, 1080);
+    expect(Math.abs(xAbajo - xArriba)).toBeLessThan(0.01);
+    const m = e.muestreoEn(2);
+    expect(m.tipo).toBe('matriz');
+    if (m.tipo === 'matriz') expect(m.uvAbajo).toBeUndefined();
+  });
+
+  it('con obturador rodante la fila de abajo se corrige con un instante posterior a la de arriba', () => {
+    // Un paneo constante de 100 grados por segundo. La fila de abajo se leyo
+    // 20 ms despues que la de arriba y en ese tiempo la camara giro 2 grados:
+    // las dos filas tienen que muestrear corridas f * tan(2 grados) = 35 px.
+    const e = prepararEstabilizacion(giro([0, 100, 0], 4), cuadros, {
+      ...base,
+      suavidad: 0.2,
+      tiempoDeLectura: 0.02,
+    });
+    const punto = e.puntoEn(2);
+    const [xArriba, yArriba] = punto(960, 0);
+    const [xAbajo, yAbajo] = punto(960, 1080);
+    // La correccion es la de la fila de ENTRADA, y por el zoom la primera fila
+    // de salida cae adentro de la imagen de entrada, no en su borde: el giro
+    // entre las dos filas es 2 grados por la fraccion del alto que separan.
+    const fraccion = (yAbajo - yArriba) / 1080;
+    expect(fraccion).toBeGreaterThan(0.5);
+    const esperado = 1000 * Math.tan((2 * fraccion * Math.PI) / 180);
+    expect(Math.abs(xAbajo - xArriba)).toBeGreaterThan(esperado * 0.95);
+    expect(Math.abs(xAbajo - xArriba)).toBeLessThan(esperado * 1.05);
+    const m = e.muestreoEn(2);
+    if (m.tipo === 'matriz') expect(m.uvAbajo).toHaveLength(9);
+  });
+
+  it('la receta del shader (interpolar las dos homografias por la fila de entrada) da el mismo punto que puntoEn', () => {
+    const e = prepararEstabilizacion(golpe(), cuadros, { ...base, tiempoDeLectura: 0.02 });
+    const t = 1.06;
+    const m = e.muestreoEn(t);
+    expect(m.tipo).toBe('matriz');
+    if (m.tipo !== 'matriz' || !m.uvAbajo) throw new Error('faltan las dos homografias');
+    const arriba = m.uv;
+    const abajo = m.uvAbajo;
+    const mezcla = (fila: number) => arriba.map((a, i) => a + (abajo[i]! - a) * fila);
+    const punto = e.puntoEn(t);
+    for (const [px, py] of [[300, 100], [960, 540], [1700, 1000], [100, 900]] as const) {
+      // En UV la v crece hacia arriba: fila 0 (arriba) es v = 1.
+      const u = px / 1920;
+      const v = 1 - py / 1080;
+      let fila = 1 - v;
+      let [qu, qv] = homografia(mezcla(fila), u, v);
+      fila = Math.min(1, Math.max(0, 1 - qv));
+      [qu, qv] = homografia(mezcla(fila), u, v);
+      const [ex, ey] = punto(px, py);
+      expect(qu * 1920).toBeCloseTo(ex, 3);
+      expect((1 - qv) * 1080).toBeCloseTo(ey, 3);
+    }
+  });
+});
