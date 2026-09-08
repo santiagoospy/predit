@@ -17,6 +17,8 @@ import {
   suavizar,
   mapeoDesdeOrientacion,
   MAPEO_SONY,
+  MAPEO_GOPRO,
+  estabilizacionFija,
   type Mapeo,
 } from './estabilizar';
 import { angulo, IDENTIDAD, multiplicar, inverso, slerp, desdeVelocidad, aMatriz } from './quat';
@@ -294,33 +296,48 @@ describe('focalPxDesdeMm', () => {
 });
 
 describe('mapeoDesdeOrientacion', () => {
-  it('lee la cadena que declara la camara', () => {
-    // "XYZ": cada canal va a su eje homonimo, todos positivos.
-    expect(mapeoDesdeOrientacion('XYZ')).toEqual({
-      pitch: { de: 'x', signo: 1 },
-      yaw: { de: 'y', signo: 1 },
-      roll: { de: 'z', signo: 1 },
+  /*
+   * La referencia es Gyroflow: omega = (-g1, g0, g2) en un marco con la y
+   * hacia arriba, y despues diag(1,-1,-1) para pasar al de la imagen. En
+   * nuestro marco: pitch = -g1, yaw = -g0, roll = -g2.
+   */
+  it('lee "XYZ" como Gyroflow: la posicion 1 es el pitch y la 0 el yaw, negadas', () => {
+    expect(mapeoDesdeOrientacion('XYZ', 'gopro')).toEqual({
+      pitch: { de: 'y', signo: -1 },
+      yaw: { de: 'x', signo: -1 },
+      roll: { de: 'z', signo: -1 },
     });
   });
 
   it('la minuscula invierte el eje', () => {
-    expect(mapeoDesdeOrientacion('XYz')?.roll).toEqual({ de: 'z', signo: -1 });
+    expect(mapeoDesdeOrientacion('XYz', 'gopro')?.roll).toEqual({ de: 'z', signo: 1 });
   });
 
-  it('cada letra dice de que canal sale el eje de ESA posicion', () => {
-    // "ZXY", que es lo que declara GoPro: el eje X sale del canal z, el eje Y
-    // del canal x y el eje Z del canal y. Leerlo al reves da la permutacion
-    // inversa, que cruza los tres ejes.
-    const mapeo = mapeoDesdeOrientacion('ZXY')!;
-    expect(mapeo.pitch).toEqual({ de: 'z', signo: 1 });
-    expect(mapeo.yaw).toEqual({ de: 'x', signo: 1 });
-    expect(mapeo.roll).toEqual({ de: 'y', signo: 1 });
+  it('cada letra dice de que canal sale la componente de ESA posicion', () => {
+    // "ZXY": g0 = z, g1 = x, g2 = y. Entonces pitch = -x, yaw = -z, roll = -y.
+    const mapeo = mapeoDesdeOrientacion('ZXY', 'gopro')!;
+    expect(mapeo.pitch).toEqual({ de: 'x', signo: -1 });
+    expect(mapeo.yaw).toEqual({ de: 'z', signo: -1 });
+    expect(mapeo.roll).toEqual({ de: 'y', signo: -1 });
   });
 
   it('no es lo mismo leerla al reves', () => {
-    // La garantia de que no se vuelva a colar la lectura invertida: una cadena
-    // ciclica y su inversa tienen que dar mapeos distintos.
-    expect(mapeoDesdeOrientacion('ZXY')).not.toEqual(mapeoDesdeOrientacion('YZX'));
+    expect(mapeoDesdeOrientacion('ZXY', 'gopro')).not.toEqual(
+      mapeoDesdeOrientacion('YZX', 'gopro'),
+    );
+  });
+
+  it('Sony pasa antes por la normalizacion de telemetry-parser', () => {
+    // "ABC" -> "BAc": se intercambian las dos primeras y se invierte la tercera.
+    // Con "XYZ" queda "YXz": g0 = y, g1 = x, g2 = -z, asi que pitch = -x,
+    // yaw = -y, roll = +z.
+    expect(mapeoDesdeOrientacion('XYZ', 'sony')).toEqual({
+      pitch: { de: 'x', signo: -1 },
+      yaw: { de: 'y', signo: -1 },
+      roll: { de: 'z', signo: 1 },
+    });
+    expect(MAPEO_SONY).toEqual(mapeoDesdeOrientacion('XYZ', 'sony'));
+    expect(MAPEO_GOPRO).toEqual(mapeoDesdeOrientacion('XYZ', 'gopro'));
   });
 
   it('el mapeo leido produce la misma rotacion que armarlo a mano', () => {
@@ -366,24 +383,43 @@ describe('matrizUvEn', () => {
     return [(m[0]! * x + m[1]! * y + m[2]!) / w, (m[3]! * x + m[4]! * y + m[5]!) / w] as const;
   };
 
-  it('da el mismo punto que la matriz en pixeles', () => {
+  it('da el mismo punto que la matriz en pixeles, con la v hacia arriba', () => {
     const e = prepararEstabilizacion(temblor(), cuadros, opciones);
     const enPx = e.matrizEn(0.37);
     const enUv = e.matrizUvEn(0.37);
 
     // Varios puntos repartidos, no solo el centro: un error de escala en un eje
-    // se esconde justo en el medio de la imagen.
+    // se esconde justo en el medio de la imagen. La textura esta volteada
+    // (UNPACK_FLIP_Y_WEBGL), asi que el pixel (x, y) es el uv (x/w, 1 - y/h).
     for (const [ux, uy] of [
       [0.5, 0.5],
       [0, 0],
       [1, 1],
       [0.25, 0.8],
     ]) {
-      const [px, py] = aplicar(enPx, ux! * opciones.ancho, uy! * opciones.alto);
+      const [px, py] = aplicar(enPx, ux! * opciones.ancho, (1 - uy!) * opciones.alto);
       const [vx, vy] = aplicar(enUv, ux!, uy!);
       expect(vx).toBeCloseTo(px / opciones.ancho, 9);
-      expect(vy).toBeCloseTo(py / opciones.alto, 9);
+      expect(vy).toBeCloseTo(1 - py / opciones.alto, 9);
     }
+  });
+
+  it('un cabeceo mueve el uv al reves que los pixeles, porque la v crece hacia arriba', () => {
+    // Un pitch puro: 20 grados por segundo alrededor del eje x durante el primer
+    // cuarto de segundo, y quieta despues. La correccion en el cuadro del medio
+    // es distinta de cero y solo vertical.
+    const muestras: MuestraGiro[] = [];
+    for (let i = 0; i <= 200; i++) {
+      muestras.push({ segundo: i / 200, x: i < 50 ? 20 : 0, y: 0, z: 0 });
+    }
+    const e = prepararEstabilizacion(muestras, cuadros, { ...opciones, suavidad: 1 });
+    const [px, py] = aplicar(e.matrizEn(0.12), opciones.ancho / 2, opciones.alto / 2);
+    const [vx, vy] = aplicar(e.matrizUvEn(0.12), 0.5, 0.5);
+    expect(Math.abs(py - opciones.alto / 2)).toBeGreaterThan(5);
+    expect(px).toBeCloseTo(opciones.ancho / 2, 6);
+    expect(vx).toBeCloseTo(0.5, 9);
+    // Si los pixeles bajan, el uv sube: la misma distancia con el otro signo.
+    expect(vy - 0.5).toBeCloseTo(-(py - opciones.alto / 2) / opciones.alto, 9);
   });
 
   it('la camara quieta deja el uv como estaba', () => {
@@ -620,5 +656,109 @@ describe('cuando el recorte no alcanza', () => {
     const antes = abanico(cuadros.map((t) => mirada(identidad, t)));
     const despues = abanico(cuadros.map((t) => mirada(e.matrizEn(t), t)));
     expect(despues).toBeLessThan(antes);
+  });
+});
+
+/**
+ * Bug 7: un golpe al final del clip no puede apagar la correccion del resto.
+ *
+ * En un clip real de 152 segundos, los ultimos cuatro (alguien agarrando la
+ * camara) pedian 116% de zoom; con el tope en 30% la ganancia GLOBAL bajaba a
+ * 30% para los 148 segundos anteriores, y un temblor de 2 grados corregido al
+ * 30% no se ve. La ganancia tiene que ser local en el tiempo.
+ */
+describe('un golpe no apaga la correccion del resto del clip', () => {
+  const base = {
+    suavidad: 0.5,
+    desfase: 0,
+    focalPx: 1100,
+    ancho: 3840,
+    alto: 2160,
+    mapeo: DIRECTO,
+    zoomMaximo: 1.3,
+  };
+
+  /** Cuarenta segundos de temblor chico y un segundo y medio de golpe al final. */
+  const conGolpe = (): MuestraGiro[] => {
+    const muestras: MuestraGiro[] = [];
+    for (let i = 0; i <= 8300; i++) {
+      const t = i / 200;
+      const golpe = t > 40 ? 400 * Math.sin((t - 40) * 6) : 0;
+      muestras.push({ segundo: t, x: 8 * Math.sin(t * 15) + golpe, y: 6 * Math.sin(t * 11 + 1), z: 0 });
+    }
+    return muestras;
+  };
+  const cuadros = Array.from({ length: 300 }, (_, i) => (i / 299) * 41.5);
+
+  it('corrige entero el cuerpo del clip y baja solo en el golpe', () => {
+    const e = prepararEstabilizacion(conGolpe(), cuadros, base);
+    expect(e.gananciaEn(3)).toBeGreaterThan(0.95);
+    expect(e.gananciaEn(30)).toBeGreaterThan(0.95);
+    expect(e.gananciaEn(41)).toBeLessThan(0.6);
+    expect(e.gananciaMinima).toBeLessThan(0.6);
+    // En promedio se corrige casi todo: el golpe es una parte chica del clip.
+    expect(e.ganancia).toBeGreaterThan(0.85);
+  });
+
+  it('el zoom lo decide el cuerpo del clip, no el golpe', () => {
+    const e = prepararEstabilizacion(conGolpe(), cuadros, base);
+    // El temblor chico necesita unos pocos por ciento; el golpe pediria mucho
+    // mas que el tope. El zoom elegido tiene que quedar cerca del primero.
+    expect(e.zoomIdeal).toBeGreaterThan(1.3);
+    expect(e.zoom).toBeLessThan(1.1);
+    expect(e.zoom).toBeGreaterThan(1);
+  });
+
+  it('la ganancia baja y vuelve despacio, sin saltos entre cuadros vecinos', () => {
+    const e = prepararEstabilizacion(conGolpe(), cuadros, base);
+    let saltoMaximo = 0;
+    for (let t = 37; t < 41.5; t += 0.04) {
+      saltoMaximo = Math.max(saltoMaximo, Math.abs(e.gananciaEn(t + 0.04) - e.gananciaEn(t)));
+    }
+    expect(saltoMaximo).toBeLessThan(0.15);
+  });
+
+  it('en el golpe nunca muestra borde negro', () => {
+    const e = prepararEstabilizacion(conGolpe(), cuadros, base);
+    for (let t = 39; t < 41.5; t += 0.02) {
+      const m = e.matrizEn(t);
+      for (const [x, y] of [
+        [0, 0],
+        [base.ancho, 0],
+        [0, base.alto],
+        [base.ancho, base.alto],
+      ]) {
+        const w = m[6]! * x! + m[7]! * y! + m[8]!;
+        const px = (m[0]! * x! + m[1]! * y! + m[2]!) / w;
+        const py = (m[3]! * x! + m[4]! * y! + m[5]!) / w;
+        // Un pixel de tolerancia: es lo que puede asomar entre dos instantes
+        // muestreados en el peor golpe, y no se ve.
+        expect(px).toBeGreaterThanOrEqual(-1);
+        expect(py).toBeGreaterThanOrEqual(-1);
+        expect(px).toBeLessThanOrEqual(base.ancho + 1);
+        expect(py).toBeLessThanOrEqual(base.alto + 1);
+      }
+    }
+  });
+
+  it('la correccion en grados sigue al temblor', () => {
+    const e = prepararEstabilizacion(conGolpe(), cuadros, base);
+    const c = e.correccionEn(3.1);
+    // El temblor es de unos grados en pitch y yaw, y nada en roll.
+    expect(Math.abs(c.pitch) + Math.abs(c.yaw)).toBeGreaterThan(0.1);
+    expect(Math.abs(c.roll)).toBeLessThan(0.05);
+  });
+});
+
+describe('estabilizacionFija', () => {
+  it('un yaw fijo corre la imagen en horizontal', () => {
+    const e = estabilizacionFija({ pitch: 0, yaw: 5, roll: 0 }, { focalPx: 1000, ancho: 1920, alto: 1080 });
+    const m = e.matrizEn(0);
+    const w = m[6]! * 960 + m[7]! * 540 + m[8]!;
+    const px = (m[0]! * 960 + m[1]! * 540 + m[2]!) / w;
+    const py = (m[3]! * 960 + m[4]! * 540 + m[5]!) / w;
+    // 5 grados con focal 1000 son unos 87 pixeles.
+    expect(Math.abs(px - 960)).toBeGreaterThan(80);
+    expect(Math.abs(py - 540)).toBeLessThan(0.01);
   });
 });

@@ -21,6 +21,7 @@ import {
   prepararEstabilizacion,
   MAPEO_GOPRO,
   MAPEO_SONY,
+  estabilizacionFija,
   type Estabilizacion,
 } from './estabilizar';
 import { hayGiro, leerGiroscopio } from './leer';
@@ -43,8 +44,22 @@ interface Props {
  */
 const MUESTRAS_DE_RECORTE = 200;
 
-/** El campo horizontal por defecto cuando la camara no dice cual es. */
-const FOV_POR_DEFECTO = 120;
+/**
+ * A partir de que velocidad angular (grados por segundo) el suavizado empieza
+ * a ceder para seguir un paneo. Ver suavizar(). Medido offline sobre un clip
+ * real: con 15 la ganancia se mantiene en 1 durante un giro de 170 grados y
+ * el balanceo lento se sigue corrigiendo.
+ */
+const VELOCIDAD_DE_PANEO = 15;
+
+/**
+ * El campo horizontal por defecto cuando la camara no dice cual es.
+ *
+ * Medido contra el video en una HERO13 Black en 8:7 (3840x3360), modo ancho:
+ * la focal que predice el movimiento de la imagen es ~1500 px, que son 104°
+ * de campo horizontal. Con 120° (1108 px) la correccion quedaba un 35% corta.
+ */
+const FOV_POR_DEFECTO = 104;
 
 export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
   const [resultado, setResultado] = useState<DatosGiro | SinGiro | null>(null);
@@ -55,7 +70,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
 
   const [activo, setActivo] = useState(false);
   /** Cuantos segundos de movimiento se promedian para sacar el temblor. */
-  const [suavidad, setSuavidad] = useState(0.5);
+  const [suavidad, setSuavidad] = useState(1);
   /** Cuanto se corre el giroscopio respecto del video, en milisegundos. */
   const [desfaseMs, setDesfaseMs] = useState(0);
   /**
@@ -91,6 +106,14 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
    * cubren las 48 combinaciones posibles y se resuelve mirando la pantalla.
    */
   const [ejesAMano, setEjesAMano] = useState('');
+  /**
+   * Un giro fijo de prueba, en grados de yaw. Es diagnostico.
+   *
+   * Separa dos problemas que en pantalla se ven iguales: que la correccion
+   * este mal calculada, o que no llegue al visor. Si al mover esto la imagen no
+   * se corre, el problema esta entre la matriz y el shader.
+   */
+  const [giroDePrueba, setGiroDePrueba] = useState(0);
 
   const leer = async () => {
     if (!clip) return;
@@ -139,11 +162,20 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
   const estabilizacion = useMemo<Estabilizacion | null>(() => {
     if (!activo || !datos || !clip || !focalPx) return null;
 
+    if (giroDePrueba !== 0) {
+      return estabilizacionFija(
+        { pitch: 0, yaw: giroDePrueba, roll: 0 },
+        { focalPx, ancho: clip.info.displayWidth, alto: clip.info.displayHeight },
+      );
+    }
+
     // Lo escrito a mano manda; si no, lo que declaro la camara; y si tampoco,
-    // el mapeo tipico de esa marca, que ya es una suposicion.
+    // "XYZ", que es lo que asume Gyroflow. Todo se lee con la convencion de
+    // Gyroflow (ver mapeoDesdeOrientacion).
     const codigo = ejesAMano.trim() || datos.orientacionEjes || '';
     const mapeo =
-      mapeoDesdeOrientacion(codigo) ?? (datos.fuente === 'sony' ? MAPEO_SONY : MAPEO_GOPRO);
+      mapeoDesdeOrientacion(codigo, datos.fuente) ??
+      (datos.fuente === 'sony' ? MAPEO_SONY : MAPEO_GOPRO);
 
     // Solo el tramo que quedo despues de recortar: un golpe en un pedazo que
     // el usuario ya descarto no tiene por que costarle encuadre al resto.
@@ -161,9 +193,10 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
       ancho: clip.info.displayWidth,
       alto: clip.info.displayHeight,
       mapeo,
+      velocidadDeReferencia: VELOCIDAD_DE_PANEO,
       zoomMaximo: 1 + recorteMax / 100,
     });
-  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano]);
+  }, [activo, datos, clip, focalPx, suavidad, desfaseMs, recorteMax, ejesAMano, giroDePrueba]);
 
   // El visor no guarda estado del giroscopio: recibe la correccion ya armada.
   useEffect(() => {
@@ -176,6 +209,9 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
 
   const recorte = estabilizacion ? ((estabilizacion.zoom - 1) * 100).toFixed(0) : '0';
   const ideal = estabilizacion ? ((estabilizacion.zoomIdeal - 1) * 100).toFixed(0) : '0';
+  /** La correccion que se esta aplicando en el cabezal, para verla moverse. */
+  const ahora = estabilizacion?.correccionEn(cabezal) ?? null;
+  const gananciaAhora = estabilizacion?.gananciaEn(cabezal) ?? 1;
 
   return (
     <section className="panel">
@@ -215,7 +251,7 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 etiqueta="suavidad"
                 valor={suavidad}
                 min={0.02}
-                max={2}
+                max={4}
                 paso={0.05}
                 onChange={setSuavidad}
                 texto={`${suavidad.toFixed(2)}s`}
@@ -261,20 +297,46 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
                 />
               </div>
               <small>
-                Si en vez de estabilizar inclina la imagen, intercambiá dos letras. Si un eje
-                corrige al revés, poné esa letra en minúscula. Tres letras distintas de X, Y y Z.
+                Se leen como Gyroflow. Si tiembla el doble en todo, pasá las tres letras a
+                minúscula. Si en vez de estabilizar inclina la imagen, intercambiá dos letras. Si
+                un solo eje corrige al revés, poné esa letra en minúscula.
               </small>
+
+              <Deslizador
+                etiqueta="prueba: girar"
+                valor={giroDePrueba}
+                min={-10}
+                max={10}
+                paso={0.5}
+                onChange={setGiroDePrueba}
+                texto={giroDePrueba === 0 ? 'apagado' : `${giroDePrueba}° yaw`}
+              />
+              {giroDePrueba !== 0 && (
+                <p className="aviso">
+                  Prueba activa: la imagen tiene que estar corrida {giroDePrueba}° en horizontal.
+                  Si no se movió, la corrección no está llegando al visor. Volvé a 0 para
+                  estabilizar de verdad.
+                </p>
+              )}
 
               <p className="nota">
                 /* recorte {recorte}% · corrige hasta{' '}
-                {estabilizacion.correccionMaxGrados.toFixed(1)}° · al{' '}
-                {(estabilizacion.ganancia * 100).toFixed(0)}% · focal {origenFocal} */
+                {estabilizacion.correccionMaxGrados.toFixed(1)}° · entero en el{' '}
+                {(estabilizacion.fraccionCompleta * 100).toFixed(0)}% del clip · focal{' '}
+                {origenFocal} */
               </p>
-              {estabilizacion.ganancia < 0.995 && (
+              {ahora && (
+                <p className="nota">
+                  /* ahora: pitch {ahora.pitch.toFixed(2)}° · yaw {ahora.yaw.toFixed(2)}° · roll{' '}
+                  {ahora.roll.toFixed(2)}° · ganancia {(gananciaAhora * 100).toFixed(0)}% */
+                </p>
+              )}
+              {estabilizacion.gananciaMinima < 0.995 && (
                 <p className="aviso">
-                  Corrigiendo al {(estabilizacion.ganancia * 100).toFixed(0)}%: para sacar todo el
-                  temblor harían falta {ideal}% de recorte y el tope está en {recorteMax}%. Subí el
-                  recorte máximo, o bajá la suavidad para conformarte con sacar el temblor rápido.
+                  Hay golpes que piden hasta {ideal}% de recorte y el tope está en {recorteMax}%.
+                  Ahí la corrección baja hasta el{' '}
+                  {(estabilizacion.gananciaMinima * 100).toFixed(0)}%; el resto del clip se corrige
+                  entero. Si el golpe está al final, recortá el clip antes de él.
                 </p>
               )}
             </>
@@ -325,7 +387,9 @@ export function PanelGiro({ clip, cabezal, onEstabilizacion }: Props) {
             <li className="hay">
               <span className="marca">{datos.orientacionEjes ? '✓' : '·'}</span>
               <span className="nombre">ejes declarados</span>
-              <span className="detalle">{datos.orientacionEjes ?? 'hay que adivinarlos'}</span>
+              <span className="detalle">
+                {datos.orientacionEjes ?? 'no los declara · XYZ como Gyroflow'}
+              </span>
             </li>
             <li className="hay">
               <span className="marca">·</span>
