@@ -123,11 +123,11 @@ export function BarraLinea({
         <div className="barra-linea-cabezal" style={{ left: `${fraccion * 100}%` }} />
       </div>
 
-      <div className="barra-linea-pie">
-        <span className="recortador-posicion">
-          {formatSeconds(mostrado)} / {formatSeconds(duracionTotal)}
-        </span>
-      </div>
+      {/* Al lado de la pista y no debajo: sobre el video, una linea propia para
+          dos relojes costaba tanto alto como la pista misma. */}
+      <span className="barra-linea-tiempo">
+        {formatSeconds(mostrado)} / {formatSeconds(duracionTotal)}
+      </span>
     </div>
   );
 }

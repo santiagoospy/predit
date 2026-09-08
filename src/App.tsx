@@ -49,7 +49,7 @@ import type { Estabilizacion } from './giro/estabilizar';
 import { PanelGiro } from './giro/PanelGiro';
 import { Deslizador } from './ui/Deslizador';
 import { guardarLut, guardarMedio } from './proyecto/almacen';
-import { horaCorta, huellaDe } from './proyecto/esquema';
+import { huellaDe } from './proyecto/esquema';
 import { PanelProyecto } from './proyecto/PanelProyecto';
 import { ReVincular } from './proyecto/ReVincular';
 import type { EstadoRestaurado } from './proyecto/restaurar';
@@ -1385,15 +1385,10 @@ export function App() {
         />
       )}
 
-      <header className="barra">
-        <h1>Predit</h1>
-        <span className="subtitulo">{preset.slug}</span>
-        <span className="guardado">
-          {proyecto.nombre}
-          {proyecto.guardadoEn !== null && ` · ${horaCorta(proyecto.guardadoEn)}`}
-        </span>
-      </header>
-
+      {/* No hay barra de titulo: eran 46px fijos para el nombre de la app, el
+          preset y la hora de guardado. El nombre no cambia nunca, y el proyecto
+          con su hora ya viven en la pestana `proyecto`, que es donde se los va a
+          buscar. En una pantalla de telefono esos 46px valen mas como panel. */}
       <main className="visor">
         {/* El canvas nunca se desmonta: el LutRenderer se construye una sola vez
             sobre el. En reposo lo tapa el placeholder, que ademas esconde el
@@ -1415,13 +1410,21 @@ export function App() {
           {hayClip && !moviendoCapa && sePuedeReencuadrar && (
             <p className="pista">/* mové la imagen para reencuadrar */</p>
           )}
-          {/* El transporte va sobre el cuadro y no en una fila propia debajo: esa
-              fila costaba 60px de alto para tres botones que casi no se tocan, y
-              encima del video quedan justo donde mira el ojo. Van adentro del
-              .marco -y no del .visor- para seguir al cuadro cuando el preset es
-              horizontal y el lienzo no llena el alto del visor. */}
-          {hayClip && (
-            <div className="controles">
+        </div>
+
+        {/* El transporte y la barra del montaje comparten una sola fila al pie
+            del visor. Van anclados al .visor y no al .marco: con el preset
+            vertical el marco mide lo que el cuadro -186px de ancho en un
+            telefono- y la pista quedaba usando la mitad del espacio que tenia.
+            Anclada al visor la pista mide todo el ancho, y con el preset
+            horizontal la fila cae en el negro de abajo del cuadro en vez de
+            taparlo. */}
+        {clips.length > 0 && (
+          <>
+            {/* El transporte flota sobre la imagen, arriba y a la izquierda de la
+                barra, en vez de compartirle la fila: la pista es lo que se
+                arrastra con precision y se queda con el ancho entero. */}
+            <div className="transporte">
               <button
                 onClick={reproducirDesdeElCabezal}
                 className="principal"
@@ -1437,19 +1440,18 @@ export function App() {
               >
                 {playing && !todo ? 'pausar()' : 'clip()'}
               </button>
-              <button
-                className={bypass ? 'activo' : ''}
-                onPointerDown={() => setBypass(true)}
-                onPointerUp={() => setBypass(false)}
-                onPointerLeave={() => setBypass(false)}
-                disabled={(!lutConv && !lutLook && gradeNeutro) || exportando}
-                title="Manten apretado para ver el cuadro tal como salio de camara"
-              >
-                crudo
-              </button>
             </div>
-          )}
-        </div>
+
+            <BarraLinea
+              tramos={tramos}
+              duracionTotal={duracionTotal}
+              posicion={tiempoGlobal}
+              selectedId={selectedId}
+              deshabilitado={exportando}
+              onSeek={irALaLinea}
+            />
+          </>
+        )}
         {!hayClip && (
           <div className="vacio">
             {/* El importar vive aca y no solo en la tira: sobre el visor vacio es
@@ -1478,20 +1480,6 @@ export function App() {
           onEnded={avanzarOTerminar}
         />
       </main>
-
-      {/* La barra del montaje entero va aca, fuera de la hoja de pestanas: es la
-          referencia de donde estamos parados y hace falta igual mientras se
-          trabaja el color o la musica, no solo en la pestana clip. */}
-      {clips.length > 0 && (
-        <BarraLinea
-          tramos={tramos}
-          duracionTotal={duracionTotal}
-          posicion={tiempoGlobal}
-          selectedId={selectedId}
-          deshabilitado={exportando}
-          onSeek={irALaLinea}
-        />
-      )}
 
       {/* La tira quedo en lo minimo: el numero de cada clip y nada mas. Con la
           tarjeta de antes -nombre, duracion y tres acciones- cuatro clips se
@@ -1764,6 +1752,29 @@ export function App() {
 
           {pestana === 'color' && (
             <section className="panel">
+              {/* `crudo` vive aca y no sobre el cuadro: compara el cuadro con y
+                  sin correccion, asi que solo sirve cuando hay algo de color
+                  puesto -esta apagado si no hay LUT ni grade- y se lo busca
+                  justo cuando se esta trabajando el color. Sobre el video
+                  ocupaba un tercio de la pildora del transporte para estar
+                  deshabilitado la mayor parte del tiempo. */}
+              <div className="fila">
+                <span className="comentario">comparar</span>
+                <div className="botones">
+                  <button
+                    className={`chico${bypass ? ' activo' : ''}`}
+                    onPointerDown={() => setBypass(true)}
+                    onPointerUp={() => setBypass(false)}
+                    onPointerLeave={() => setBypass(false)}
+                    onPointerCancel={() => setBypass(false)}
+                    disabled={(!lutConv && !lutLook && gradeNeutro) || exportando}
+                    title="Manten apretado para ver el cuadro tal como salio de camara"
+                  >
+                    mantener para ver crudo
+                  </button>
+                </div>
+              </div>
+
               <div className="fila">
                 <span className="comentario">color antes del lut</span>
                 <Deslizador

@@ -92,11 +92,6 @@ body {
   color: var(--texto);
 }
 
-.subtitulo {
-  color: var(--comentario);
-  font-size: 11px;
-}
-
 .visor {
   position: relative;
   display: flex;
@@ -204,30 +199,49 @@ body {
 /* El transporte vive sobre el cuadro, en una pildora oscura para que se lea
    encima de cualquier imagen. Antes era una fila propia debajo del visor: 60px
    de alto para tres botones que casi no se tocan, que ahora son de la hoja. */
-.controles {
+/* El transporte flota sobre la imagen, arriba de la barra del montaje y pegado
+   a la izquierda. Anclado al .visor y no al .marco: con el preset horizontal el
+   marco es bajito y centrado, y colgado de el la pildora terminaba en el medio
+   del cuadro.
+
+   `bottom` es lo que mide la barra (34px) mas el aire entre las dos. */
+.transporte {
   position: absolute;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 18px;
+  bottom: 54px;
+  z-index: 2;
   display: flex;
   gap: 4px;
   padding: 3px;
   border-radius: var(--radio);
-  background: rgba(10, 10, 12, 0.66);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 2;
+  /* Mas transparente que el resto de las superficies: esto vive sobre la imagen
+     y lo que tapa tiene que seguir leyendose. */
+  background: rgba(10, 10, 12, 0.34);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 /* Mas chicos que el minimo tocable del resto de la app, a proposito: le estan
-   robando cuadro al video. Con 30px el pulgar los agarra igual. */
-.controles button {
+   robando cuadro al video. Son los unicos controles de la app por debajo de los
+   40px; se toca poco -se arranca y se para- y siempre en el mismo lugar. */
+.transporte button {
   flex: 0 0 auto;
-  min-height: 30px;
-  padding: 5px 9px;
+  min-height: 26px;
+  padding: 4px 8px;
   border-color: transparent;
   color: var(--texto-2);
-  font-size: 11px;
+  font-size: 10px;
+}
+
+/* Sobre la imagen el relleno macizo del acento es una mancha azul en el medio
+   del cuadro. Aca el mismo azul queda solo insinuado: alcanza para separar la
+   accion principal de la otra sin competirle al video. */
+.transporte button.principal,
+.transporte button.principal:hover:not(:disabled) {
+  background: rgba(92, 139, 176, 0.2);
+  border-color: rgba(92, 139, 176, 0.4);
+  color: var(--texto-2);
+  font-weight: 500;
 }
 
 /* --- Botones --- */
@@ -574,17 +588,38 @@ button.grande {
 
 /* --- Barra de la linea de tiempo --- */
 
-/* La barra del montaje entero, entre el visor y la tira. Alta para el dedo
-   aunque la pista se vea fina, igual que .recortador-barra. */
+/* La barra del montaje, superpuesta al pie del cuadro. El degradado la despega
+   de la imagen sin taparla: una franja solida costaba los mismos pixeles de
+   video pero sin dejar ver nada. El radio de abajo acompana al del lienzo.
+
+   El contenedor no recibe eventos -solo la pista y el reloj-, para que el
+   padding transparente de arriba no le robe el arrastre de reencuadre al canvas
+   que tiene debajo. */
 .barra-linea {
-  padding: 8px 18px 0;
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: var(--radio);
+  background: rgba(10, 10, 12, 0.34);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
+/* Alta para el dedo aunque la pista se vea fina, igual que .recortador-barra.
+   Sobre el video se recorta a 22px: cada pixel de area tactil aca es un pixel
+   de cuadro tapado. */
 .barra-linea-pista {
   position: relative;
+  flex: 1;
   display: flex;
   gap: 2px;
-  height: 28px;
+  height: 22px;
+  pointer-events: auto;
   cursor: pointer;
   /* Sin esto, iOS se queda con el arrastre horizontal y scrollea la pagina. */
   touch-action: none;
@@ -596,17 +631,21 @@ button.grande {
 }
 
 /* Un tramo por clip. El hueco de 2px del flex hace de linea divisoria: no hace
-   falta un borde, y asi el ultimo tramo no queda con una raya colgando. */
+   falta un borde, y asi el ultimo tramo no queda con una raya colgando.
+
+   Sobre el video los tramos van en blanco translucido y no en los grises del
+   sistema: --borde-tenue se disuelve sobre un cuadro oscuro y --relleno sobre
+   uno claro, y el cuadro puede ser cualquiera de los dos. */
 .barra-linea-tramo {
   align-self: center;
   height: 8px;
   border-radius: 2px;
-  background: var(--borde-tenue);
+  background: rgba(255, 255, 255, 0.3);
   pointer-events: none;
 }
 
 .barra-linea-tramo.activo {
-  background: var(--relleno);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 /* Mismo cabezal que el del recortador, un poco mas alto porque esta barra no
@@ -619,13 +658,28 @@ button.grande {
   width: 2px;
   margin-left: -1px;
   border-radius: 1px;
-  background: var(--acento);
+  /* El acento apenas insinuado, como el del boton de play: sobre la imagen un
+     azul macizo se lee como un elemento del video y no como un control. El
+     contorno oscuro es lo que lo sostiene cuando el cuadro de atras es claro. */
+  background: rgba(92, 139, 176, 0.55);
+  box-shadow: 0 0 0 1px rgba(10, 10, 12, 0.45);
   pointer-events: none;
 }
 
-.barra-linea-pie {
-  display: flex;
-  align-items: center;
+/* El reloj del montaje, flotando arriba de la pildora y no adentro: en la fila
+   ya conviven el transporte y la pista, y sumarle 70px de relojes dejaba la
+   pista en la mitad de ancho. Fuera del flujo no le cuesta nada. La sombra es lo
+   unico que lo sostiene cuando el cuadro de atras es claro. */
+.barra-linea-tiempo {
+  position: absolute;
+  right: 2px;
+  bottom: 100%;
+  margin-bottom: 5px;
+  pointer-events: none;
+  color: var(--texto-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
 /* --- Tira de clips --- */
@@ -869,17 +923,6 @@ label.chico.ocupado {
 }
 
 /* --- Proyecto: guardado, lista y re-vinculacion --- */
-
-/* El nombre del proyecto y la hora del ultimo autoguardado. Va a la derecha del
-   todo, separado del preset, porque no se lee: se mira de reojo para confirmar
-   que lo que uno hizo quedo guardado. */
-.guardado {
-  margin-left: auto;
-  color: var(--tenue);
-  font-size: 11px;
-  text-align: right;
-  word-break: break-word;
-}
 
 /* La pantalla que pide los archivos de un proyecto guardado. Tapa el editor en
    vez de reemplazarlo: asi el <canvas> nunca se desmonta y el contexto WebGL
