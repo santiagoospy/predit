@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 
+import { varClipDe } from './colorClip';
 import { formatSeconds, segundosDesdeX } from './trim';
 
 /** Cuanto mueve el cabezal cada flecha del teclado, en segundos del montaje. */
@@ -165,7 +167,12 @@ export function BarraLinea({
           <div
             key={t.id}
             className={`barra-linea-tramo${t.id === selectedId ? ' activo' : ''}`}
-            style={{ flexGrow: Math.max(t.duracion, 0.001) }}
+            style={
+              {
+                flexGrow: Math.max(t.duracion, 0.001),
+                '--clip': varClipDe(t.id),
+              } as CSSProperties
+            }
           />
         ))}
         <div className="barra-linea-cabezal" style={{ left: `${fraccion * 100}%` }} />

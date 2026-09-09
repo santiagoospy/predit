@@ -29,6 +29,16 @@
   --error: #c96c6c;
   --ok: #7fa87f;
 
+  /* El ciclo de colores del montaje: seis clips que se distinguen de un
+     vistazo, uno por `colorDeClip()`. Fuera de la paleta gris del resto de
+     la app a proposito, para que se lean como el eje que son. */
+  --clip-1: #569cd6;
+  --clip-2: #ce9178;
+  --clip-3: #c586c0;
+  --clip-4: #dcdcaa;
+  --clip-5: #4ec9b0;
+  --clip-6: #b5cea8;
+
   --radio: 5px;
   --radio-lg: 6px;
   --radio-card: 8px;
@@ -633,19 +643,19 @@ button.grande {
 /* Un tramo por clip. El hueco de 2px del flex hace de linea divisoria: no hace
    falta un borde, y asi el ultimo tramo no queda con una raya colgando.
 
-   Sobre el video los tramos van en blanco translucido y no en los grises del
-   sistema: --borde-tenue se disuelve sobre un cuadro oscuro y --relleno sobre
-   uno claro, y el cuadro puede ser cualquiera de los dos. */
+   Cada tramo lleva el color de su clip (--clip, puesto inline por
+   BarraLinea segun colorDeClip) traslucido al 62%: el fondo es un cuadro de
+   video, no una superficie del sistema, y puede ser tan claro como oscuro. */
 .barra-linea-tramo {
   align-self: center;
   height: 8px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.3);
+  background: color-mix(in srgb, var(--clip, #fff) 62%, transparent);
   pointer-events: none;
 }
 
 .barra-linea-tramo.activo {
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--clip, rgba(255, 255, 255, 0.92));
 }
 
 /* Mismo cabezal que el del recortador, un poco mas alto porque esta barra no
@@ -731,6 +741,13 @@ button.grande {
 .tira-clip.activo:hover {
   border-color: var(--acento);
   color: var(--acento);
+}
+
+/* Solo el numero lleva el color del clip (--clip, mismo dato que su tramo en
+   la barra); el chip en si -borde, fondo, estado activo- no cambia. Con seis
+   colores en juego la seleccion no puede depender de uno de ellos. */
+.tira-clip-num {
+  color: var(--clip, inherit);
 }
 
 .aviso-badge {

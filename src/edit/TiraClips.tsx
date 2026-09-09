@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 
+import { varClipDe } from './colorClip';
 import { formatDuration } from '../media/probe';
 import { decaer, seFreno, velocidadDe, type Muestra } from './deslizar';
 import {
@@ -409,7 +411,12 @@ export function TiraClips({
             onPointerCancel={terminar}
             onContextMenu={(e) => e.preventDefault()}
           >
-            {String(i + 1).padStart(2, '0')}
+            <span
+              className="tira-clip-num"
+              style={{ '--clip': varClipDe(c.id) } as CSSProperties}
+            >
+              {String(i + 1).padStart(2, '0')}
+            </span>
             {c.warnings.length > 0 && (
               <span className="aviso-badge" title={c.warnings.join(' ')}>
                 ⚠
