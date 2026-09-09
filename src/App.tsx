@@ -182,6 +182,18 @@ export function App() {
    * y puede caer en un clip que todavia no es el seleccionado.
    */
   const saltoRef = useRef<number | null>(null);
+  /**
+   * Si al soltar la barra general hay que volver a reproducir. Se pone cuando
+   * el arrastre interrumpio una cadena que venia sonando: el dedo frena, y al
+   * soltar se retoma desde el punto nuevo.
+   */
+  const reanudarRef = useRef(false);
+  /**
+   * `reproducirDesdeElCabezal` visto desde arriba: el salto de clip termina en
+   * un efecto que se declara antes que esa funcion, y desde ahi hay que poder
+   * retomar la reproduccion cuando el archivo nuevo ya tiene cuadro.
+   */
+  const reproducirRef = useRef<() => void>(() => {});
   const audioCtxRef = useRef<AudioContext | null>(null);
   const musicNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const musicGainRef = useRef<GainNode | null>(null);
@@ -561,6 +573,13 @@ export function App() {
       if (enCadena) {
         void video.play();
         setPlaying(true);
+        return;
+      }
+      // El arrastre de la barra general solto el dedo en OTRO clip: recien
+      // ahora, con cuadro decodificado, se puede retomar la reproduccion.
+      if (reanudarRef.current) {
+        reanudarRef.current = false;
+        reproducirRef.current();
       }
     };
     const buscar = () => {
@@ -1001,7 +1020,7 @@ export function App() {
    * capa muestre el cuadro que se esta marcando, aunque caiga en otro clip.
    */
   const irALaLinea = useCallback(
-    (segundos: number) => {
+    (segundos: number, opts?: { arrastrando?: boolean }) => {
       const video = videoRef.current;
       if (!video || clips.length === 0) return;
 
@@ -1016,9 +1035,17 @@ export function App() {
             c.trimOut,
             Math.max(c.trimIn, c.trimIn + (segundos - acc) * c.speed),
           );
+          const cargando = video.dataset.clipId !== c.id || video.readyState < 1;
           if (c.id === selectedId) {
+            // Arrastrando, si el archivo todavia esta cargando no se lo toca:
+            // escribirle el tiempo ahora pisaria la busqueda en curso, y el
+            // cuadro siguiente del gesto vuelve a intentar igual.
+            if (opts?.arrastrando && cargando) return;
             video.currentTime = dentro;
             setCurrentTime(dentro);
+            // Durante el arrastre la musica ya viene frenada; reengancharla en
+            // cada cuadro la dejaria tartamudeando.
+            if (opts?.arrastrando) return;
             // Saltar mientras suena dejaria la musica corrida contra la imagen;
             // se la reengancha en el segundo nuevo, igual que hace `seek`.
             if (video.paused) detenerMusica();
@@ -1426,6 +1453,33 @@ export function App() {
     setPlaying(true);
   }, [selected, trimIn, trimOut, speed, offsetSeleccionado, arrancarMusica, frenar]);
 
+  useEffect(() => {
+    reproducirRef.current = reproducirDesdeElCabezal;
+  }, [reproducirDesdeElCabezal]);
+
+  /**
+   * El dedo agarro la barra general.
+   *
+   * Si venia sonando la cadena se frena: mover el cabezal contra la musica en
+   * marcha la deja reenganchandose en cada cuadro, que suena entrecortado. Al
+   * soltar se retoma sola desde el punto nuevo.
+   */
+  const empezarArrastre = useCallback(() => {
+    reanudarRef.current = todoRef.current && playing;
+    if (reanudarRef.current) frenar();
+  }, [playing, frenar]);
+
+  const terminarArrastre = useCallback(() => {
+    if (!reanudarRef.current) return;
+    const video = videoRef.current;
+    // Si el soltar cayo en un clip que se esta cargando, la marca queda puesta
+    // y la consume el efecto de `[selectedId]` cuando haya cuadro.
+    if (!video || !selected) return;
+    if (video.dataset.clipId !== selected.id || video.readyState < 1) return;
+    reanudarRef.current = false;
+    reproducirDesdeElCabezal();
+  }, [selected, reproducirDesdeElCabezal]);
+
   /** Corre una limpieza del almacen y cuenta en pantalla cuanto se libero. */
   const liberar = useCallback(async (accion: () => Promise<number>) => {
     const bytes = await accion();
@@ -1642,6 +1696,9 @@ export function App() {
               selectedId={selectedId}
               deshabilitado={exportando}
               onSeek={irALaLinea}
+              onScrubStart={empezarArrastre}
+              onScrub={(s) => irALaLinea(s, { arrastrando: true })}
+              onScrubEnd={terminarArrastre}
             />
           </>
         )}

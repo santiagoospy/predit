@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { formatSeconds, segundosDesdeX } from './trim';
 
@@ -19,8 +19,14 @@ export interface BarraLineaProps {
   posicion: number;
   selectedId: string | null;
   deshabilitado: boolean;
-  /** Adonde saltar. Se llama al soltar, no en cada pixel del arrastre. */
+  /** Adonde saltar. Se llama al soltar: es el salto definitivo. */
   onSeek: (segundos: number) => void;
+  /** Empieza el arrastre. Sirve para pausar lo que estuviera sonando. */
+  onScrubStart?: () => void;
+  /** Adonde mira el dedo AHORA, ya limitado a uno por cuadro de pantalla. */
+  onScrub?: (segundos: number) => void;
+  /** Termino el arrastre, despues de `onSeek`. */
+  onScrubEnd?: () => void;
 }
 
 /**
@@ -31,10 +37,12 @@ export interface BarraLineaProps {
  * pestana clip habla en segundos del ARCHIVO del clip seleccionado, asi que con
  * doce clips no habia manera de saltar a la mitad del montaje.
  *
- * El salto se manda recien al soltar y no mientras el dedo se mueve: cruzar de
- * clip recarga el `<video>`, y hacerlo en cada pixel dejaba el arrastre
- * inservible. Durante el gesto el cabezal se dibuja del estado local, asi que
- * igual se ve seguir al dedo.
+ * El visor sigue al dedo durante el arrastre (`onScrub`), igual que en la barra
+ * de un clip. Los `pointermove` llegan mucho mas seguido que lo que la pantalla
+ * puede dibujar, asi que se acumula el ultimo segundo y se avisa una sola vez
+ * por cuadro: sin eso, cruzar de clip -que recarga el `<video>`- dejaba el
+ * arrastre inservible. El cabezal igual se dibuja del estado local, que no
+ * depende de que el video haya llegado.
  */
 export function BarraLinea({
   tramos,
@@ -43,10 +51,42 @@ export function BarraLinea({
   selectedId,
   deshabilitado,
   onSeek,
+  onScrubStart,
+  onScrub,
+  onScrubEnd,
 }: BarraLineaProps) {
   const arrastrando = useRef(false);
   /** Los segundos bajo el dedo mientras dura el gesto; null si no hay gesto. */
   const [enElDedo, setEnElDedo] = useState<number | null>(null);
+
+  /** Lo ultimo que pidio el dedo y el cuadro pedido para avisarlo, si hay uno. */
+  const pendiente = useRef<number | null>(null);
+  const cuadro = useRef<number | null>(null);
+
+  const cancelarCuadro = useCallback(() => {
+    if (cuadro.current !== null) cancelAnimationFrame(cuadro.current);
+    cuadro.current = null;
+    pendiente.current = null;
+  }, []);
+
+  // Un gesto que quedo a medias no tiene que dejar un cuadro colgado.
+  useEffect(() => cancelarCuadro, [cancelarCuadro]);
+
+  /** Avisa el segundo nuevo como mucho una vez por cuadro de pantalla. */
+  const avisar = useCallback(
+    (segundos: number) => {
+      if (!onScrub) return;
+      pendiente.current = segundos;
+      if (cuadro.current !== null) return;
+      cuadro.current = requestAnimationFrame(() => {
+        cuadro.current = null;
+        const s = pendiente.current;
+        pendiente.current = null;
+        if (s !== null) onScrub(s);
+      });
+    },
+    [onScrub],
+  );
 
   const leer = useCallback(
     (clientX: number, rect: DOMRect) =>
@@ -59,17 +99,22 @@ export function BarraLinea({
       if (deshabilitado || duracionTotal <= 0) return;
       arrastrando.current = true;
       e.currentTarget.setPointerCapture(e.pointerId);
-      setEnElDedo(leer(e.clientX, e.currentTarget.getBoundingClientRect()));
+      const segundos = leer(e.clientX, e.currentTarget.getBoundingClientRect());
+      setEnElDedo(segundos);
+      onScrubStart?.();
+      avisar(segundos);
     },
-    [deshabilitado, duracionTotal, leer],
+    [deshabilitado, duracionTotal, leer, onScrubStart, avisar],
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!arrastrando.current) return;
-      setEnElDedo(leer(e.clientX, e.currentTarget.getBoundingClientRect()));
+      const segundos = leer(e.clientX, e.currentTarget.getBoundingClientRect());
+      setEnElDedo(segundos);
+      avisar(segundos);
     },
-    [leer],
+    [leer, avisar],
   );
 
   const soltar = useCallback(
@@ -77,10 +122,13 @@ export function BarraLinea({
       if (!arrastrando.current) return;
       arrastrando.current = false;
       const segundos = leer(e.clientX, e.currentTarget.getBoundingClientRect());
+      // El cuadro pendiente ya no sirve: `onSeek` manda sobre el.
+      cancelarCuadro();
       setEnElDedo(null);
       onSeek(segundos);
+      onScrubEnd?.();
     },
-    [leer, onSeek],
+    [leer, onSeek, onScrubEnd, cancelarCuadro],
   );
 
   const mostrado = enElDedo ?? posicion;
