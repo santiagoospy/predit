@@ -42,6 +42,24 @@ export const LIMITES = {
   gain: { min: 0.4, max: 2.5, paso: 0.01 },
 } as const;
 
+/**
+ * Cuanto pesa un LUT, de 0 a 1. Entero por defecto: elegir un LUT y verlo a
+ * medias seria desconcertante.
+ *
+ * El paso es 0.01 porque la UI lo muestra en porcentaje entero.
+ */
+export const MEZCLA_ENTERA = 1;
+export const LIMITES_MEZCLA = { min: 0, max: 1, paso: 0.01 } as const;
+
+/**
+ * Lee la mezcla guardada de un LUT. Igual que sanearGrade: un proyecto de antes
+ * de que el deslizador existiera no la trae, y tiene que abrir con el LUT
+ * entero, que es como se veia cuando se guardo.
+ */
+export function sanearMezcla(v: number | undefined): number {
+  return acotar(v, LIMITES_MEZCLA, MEZCLA_ENTERA);
+}
+
 /** Si el clip no tiene nada tocado. Sirve para esconder el boton de reset. */
 export function esNeutro(g: Grade): boolean {
   return g.lift === GRADE_NEUTRO.lift && g.gamma === GRADE_NEUTRO.gamma && g.gain === GRADE_NEUTRO.gain;

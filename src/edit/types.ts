@@ -24,6 +24,9 @@ export interface TimelineClip {
   warnings: string[];
   lutConvId: string | null;
   lutLookId: string | null;
+  /** Cuanto pesa cada LUT, de 0 a 1. Ver LIMITES_MEZCLA en color/grade.ts. */
+  lutConvMix: number;
+  lutLookMix: number;
   /**
    * Correccion primaria, ANTES de los LUTs. Ver color/grade.ts.
    *

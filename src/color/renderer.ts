@@ -65,6 +65,12 @@ export class LutRenderer {
   private readonly overlayTex: WebGLTexture;
   private readonly loc: Record<string, WebGLUniformLocation | null> = {};
   private readonly luts: Record<LutSlot, LoadedLut | null> = { conv: null, look: null };
+  /**
+   * Cuanto pesa cada LUT, de 0 a 1. Aparte de `luts` y no adentro porque cambia
+   * mucho mas seguido: mientras se arrastra el deslizador esto se actualiza en
+   * cada cuadro, y meterlo en setLut volveria a subir la textura 3D entera.
+   */
+  private readonly mezclas: Record<LutSlot, number> = { conv: 1, look: 1 };
   /** Correccion primaria del clip de abajo. La capa nunca la usa. */
   private grade: Grade = GRADE_NEUTRO;
   /** Si ya se subio una imagen de capa. Sin esto, drawOverlay dibujaria basura. */
@@ -92,8 +98,8 @@ export class LutRenderer {
 
     const uniformNames = [
       'uTransform', 'uFrame', 'uOpacity', 'uUsarAlfa',
-      'uLutConv', 'uHasConv', 'uSizeConv', 'uDomMinConv', 'uDomMaxConv',
-      'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook',
+      'uLutConv', 'uHasConv', 'uSizeConv', 'uDomMinConv', 'uDomMaxConv', 'uMixConv',
+      'uLutLook', 'uHasLook', 'uSizeLook', 'uDomMinLook', 'uDomMaxLook', 'uMixLook',
       'uLift', 'uGamma', 'uGain',
       'uEstab', 'uHayEstab', 'uHayLectura', 'uEstabAbajo',
       'uHayLente', 'uLenteF', 'uLenteC', 'uLenteK', 'uFocalSalida', 'uRectificar', 'uTamano',
@@ -142,6 +148,18 @@ export class LutRenderer {
           domainMax: lut.domainMax,
         }
       : null;
+  }
+
+  /**
+   * Cuanto pesa un LUT, de 0 (como si no estuviera) a 1 (entero).
+   *
+   * Separado de setLut a proposito: arrastrar el deslizador cambia esto sesenta
+   * veces por segundo y subir de nuevo la textura 3D en cada paso trabaria la
+   * previsualizacion.
+   */
+  setMezcla(slot: LutSlot, valor: number): void {
+    this.assertAlive();
+    this.mezclas[slot] = Math.min(1, Math.max(0, valor));
   }
 
   /**
@@ -362,6 +380,7 @@ export class LutRenderer {
       gl.uniform1f(this.loc['uSize' + suffix]!, lut.size);
       gl.uniform3f(this.loc['uDomMin' + suffix]!, ...lut.domainMin);
       gl.uniform3f(this.loc['uDomMax' + suffix]!, ...lut.domainMax);
+      gl.uniform1f(this.loc['uMix' + suffix]!, this.mezclas[slot]);
     }
   }
 

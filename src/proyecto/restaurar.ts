@@ -14,7 +14,7 @@
  */
 
 import { decodeAudioRange } from '../audio/decode';
-import { sanearGrade } from '../color/grade';
+import { sanearGrade, sanearMezcla } from '../color/grade';
 import type { LibraryLut, MusicTrack, OverlayLayer, TimelineClip } from '../edit/types';
 import { sanearAjustes } from '../giro/ajustes';
 import { DEFAULT_PRESET, EXPORT_PRESETS, type ExportPreset } from '../export/presets';
@@ -130,6 +130,8 @@ export async function reconstruir(
         warnings: clipWarnings(info),
         lutConvId: conv,
         lutLookId: look,
+        lutConvMix: sanearMezcla(guardado.lutConvMix),
+        lutLookMix: sanearMezcla(guardado.lutLookMix),
         // Con sanearGrade y no directo: un proyecto guardado antes de que estos
         // campos existieran entra en neutro en vez de mandarle undefined a la GPU.
         ...sanearGrade(guardado),

@@ -3,7 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { decodeAudioRange } from './audio/decode';
 import { clipAportaAudio } from './audio/mix';
 import { parseCube } from './color/cube';
-import { esNeutro, GRADE_NEUTRO, LIMITES } from './color/grade';
+import { esDeFabrica } from './color/fabrica';
+import { esNeutro, GRADE_NEUTRO, LIMITES, LIMITES_MEZCLA, MEZCLA_ENTERA } from './color/grade';
 import { computeFit, LutRenderer, type Framing } from './color/renderer';
 import { BarraLinea } from './edit/BarraLinea';
 import { partir } from './edit/cortar';
@@ -241,6 +242,8 @@ export function App() {
   const indiceSeleccionado = clips.findIndex((c) => c.id === selectedId);
   const lutConv = selected ? (lutLibrary.find((l) => l.id === selected.lutConvId) ?? null) : null;
   const lutLook = selected ? (lutLibrary.find((l) => l.id === selected.lutLookId) ?? null) : null;
+  const lutConvMix = selected?.lutConvMix ?? MEZCLA_ENTERA;
+  const lutLookMix = selected?.lutLookMix ?? MEZCLA_ENTERA;
 
   const duration = selected?.info.durationSeconds ?? 0;
   const sourceFps = selected?.info.frameRate ?? DEFAULT_FRAME_RATE;
@@ -504,6 +507,16 @@ export function App() {
   useEffect(() => {
     rendererRef.current?.setLut('look', lutLook?.lut ?? null);
   }, [lutLook]);
+
+  // Aparte de los dos efectos de arriba: mover el deslizador no tiene que volver
+  // a subir la textura 3D del LUT, que es lo que hace setLut.
+  useEffect(() => {
+    rendererRef.current?.setMezcla('conv', lutConvMix);
+  }, [lutConvMix]);
+
+  useEffect(() => {
+    rendererRef.current?.setMezcla('look', lutLookMix);
+  }, [lutLookMix]);
 
   // Las dependencias son los tres numeros y no un objeto: uno armado aca cambiaria
   // de identidad en cada render y volveria a subir los uniforms sin motivo.
@@ -1105,6 +1118,8 @@ export function App() {
           url: URL.createObjectURL(file),
           info,
           warnings: clipWarnings(info),
+          lutConvMix: MEZCLA_ENTERA,
+          lutLookMix: MEZCLA_ENTERA,
           lutConvId: null,
           lutLookId: null,
           ...GRADE_NEUTRO,
@@ -1204,7 +1219,11 @@ export function App() {
       setError(null);
       try {
         const lut = parseCube(await file.text());
-        const existente = lutLibrary.find((l) => l.name === file.name);
+        // Subir dos veces el mismo .cube pisa la entrada anterior en vez de
+        // duplicarla, pero los de fabrica quedan afuera: si alguien sube un
+        // archivo que se llama igual que uno de ellos, tiene que entrar como
+        // LUT propio y no reescribir el que trae la app.
+        const existente = lutLibrary.find((l) => l.name === file.name && !esDeFabrica(l.id));
         const id = existente?.id ?? nextId('lut');
         setLutLibrary((prev) =>
           existente
@@ -1526,6 +1545,8 @@ export function App() {
         speed: c.speed,
         lutConv: lutLibrary.find((l) => l.id === c.lutConvId)?.lut ?? null,
         lutLook: lutLibrary.find((l) => l.id === c.lutLookId)?.lut ?? null,
+        lutConvMix: c.lutConvMix,
+        lutLookMix: c.lutLookMix,
         lift: c.lift,
         gamma: c.gamma,
         gain: c.gain,
@@ -2071,6 +2092,8 @@ export function App() {
                 selectedId={selected?.lutConvId ?? null}
                 onSelect={(id) => updateSelected({ lutConvId: id })}
                 onUpload={(f) => void onUploadLut(f, 'conv')}
+                mezcla={lutConvMix}
+                onMezcla={(v) => updateSelected({ lutConvMix: v })}
                 hayClip={hayClip}
                 deshabilitado={enReposo}
               />
@@ -2081,6 +2104,8 @@ export function App() {
                 selectedId={selected?.lutLookId ?? null}
                 onSelect={(id) => updateSelected({ lutLookId: id })}
                 onUpload={(f) => void onUploadLut(f, 'look')}
+                mezcla={lutLookMix}
+                onMezcla={(v) => updateSelected({ lutLookMix: v })}
                 hayClip={hayClip}
                 deshabilitado={enReposo}
               />
@@ -2456,6 +2481,8 @@ function LutChooser({
   selectedId,
   onSelect,
   onUpload,
+  mezcla,
+  onMezcla,
   hayClip,
   deshabilitado,
 }: {
@@ -2464,6 +2491,9 @@ function LutChooser({
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onUpload: (file: File | undefined) => void;
+  /** Cuanto pesa el LUT elegido, de 0 a 1. */
+  mezcla: number;
+  onMezcla: (valor: number) => void;
   /** Sin clip nada esta elegido: en reposo no se marca ni "ninguno". */
   hayClip: boolean;
   deshabilitado: boolean;
@@ -2503,6 +2533,20 @@ function LutChooser({
           />
         </label>
       </div>
+      {/* Solo con un LUT puesto: sin nada que graduar el deslizador no significa
+          nada, y el alto de pantalla en un telefono es lo que mas escasea. */}
+      {hayClip && selectedId !== null && (
+        <Deslizador
+          etiqueta="intensidad"
+          valor={mezcla}
+          min={LIMITES_MEZCLA.min}
+          max={LIMITES_MEZCLA.max}
+          paso={LIMITES_MEZCLA.paso}
+          onChange={onMezcla}
+          texto={`${Math.round(mezcla * 100)}%`}
+          deshabilitado={deshabilitado}
+        />
+      )}
     </div>
   );
 }

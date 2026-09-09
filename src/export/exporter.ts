@@ -44,6 +44,9 @@ export interface ExportClip {
   speed: number;
   lutConv: Lut3D | null;
   lutLook: Lut3D | null;
+  /** Cuanto pesa cada LUT, de 0 a 1. */
+  lutConvMix: number;
+  lutLookMix: number;
   /** Correccion primaria, que va antes de los LUTs. Ver color/grade.ts. */
   lift: number;
   gamma: number;
@@ -200,6 +203,8 @@ export async function exportClips(
 
       renderer.setLut('conv', clip.lutConv);
       renderer.setLut('look', clip.lutLook);
+      renderer.setMezcla('conv', clip.lutConvMix);
+      renderer.setMezcla('look', clip.lutLookMix);
       renderer.setGrade({ lift: clip.lift, gamma: clip.gamma, gain: clip.gain });
 
       const clipEndSeconds = timelineSeconds + outputDuration(clip);

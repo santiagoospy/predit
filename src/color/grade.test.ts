@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyGrade, esNeutro, GRADE_NEUTRO, LIMITES, sanearGrade, type Grade } from './grade';
+import {
+  applyGrade,
+  esNeutro,
+  GRADE_NEUTRO,
+  LIMITES,
+  LIMITES_MEZCLA,
+  MEZCLA_ENTERA,
+  sanearGrade,
+  sanearMezcla,
+  type Grade,
+} from './grade';
 
 const g = (extra: Partial<Grade> = {}): Grade => ({ ...GRADE_NEUTRO, ...extra });
 
@@ -92,5 +102,28 @@ describe('sanearGrade', () => {
   it('descarta basura que no es un numero utilizable', () => {
     const roto = { lift: NaN, gamma: 'mucho', gain: null } as unknown as Partial<Grade>;
     expect(sanearGrade(roto)).toEqual(GRADE_NEUTRO);
+  });
+});
+
+describe('sanearMezcla', () => {
+  // Lo que abre los proyectos guardados antes de que el deslizador existiera:
+  // tienen que verse como el dia que se guardaron, o sea con el LUT entero.
+  it('un clip guardado sin el campo entra con el LUT entero', () => {
+    expect(sanearMezcla(undefined)).toBe(MEZCLA_ENTERA);
+  });
+
+  it('respeta un valor valido', () => {
+    expect(sanearMezcla(0.55)).toBe(0.55);
+    expect(sanearMezcla(0)).toBe(0);
+  });
+
+  it('acota lo que se fue de rango', () => {
+    expect(sanearMezcla(-3)).toBe(LIMITES_MEZCLA.min);
+    expect(sanearMezcla(4)).toBe(LIMITES_MEZCLA.max);
+  });
+
+  it('descarta basura', () => {
+    expect(sanearMezcla(NaN)).toBe(MEZCLA_ENTERA);
+    expect(sanearMezcla('mitad' as unknown as number)).toBe(MEZCLA_ENTERA);
   });
 });

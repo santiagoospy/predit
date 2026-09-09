@@ -155,6 +155,18 @@ uniform vec3  uDomMinLook;
 uniform vec3  uDomMaxLook;
 
 /**
+ * Cuanto pesa cada LUT, de 0 (como si no estuviera) a 1 (entero).
+ *
+ * Es una interpolacion lineal entre la entrada y la salida del LUT. En el de
+ * look, que va de 709 a 709, eso es exactamente "la mitad del efecto". En el de
+ * conversion NO: mezcla una senal log con una ya convertida, que son espacios
+ * distintos, y los valores intermedios lavan la imagen. Se deja igual porque es
+ * una decision del usuario y como efecto sirve.
+ */
+uniform float uMixConv;
+uniform float uMixLook;
+
+/**
  * Correccion primaria del clip, ANTES de los LUTs: lift, gamma y gain.
  *
  * En vec3 y no en float aunque hoy la UI mueva las tres perillas parejas: el dia
@@ -208,10 +220,10 @@ void main() {
   color = color * uGain;
 
   if (uHasConv) {
-    color = applyLut(uLutConv, uSizeConv, uDomMinConv, uDomMaxConv, color);
+    color = mix(color, applyLut(uLutConv, uSizeConv, uDomMinConv, uDomMaxConv, color), uMixConv);
   }
   if (uHasLook) {
-    color = applyLut(uLutLook, uSizeLook, uDomMinLook, uDomMaxLook, color);
+    color = mix(color, applyLut(uLutLook, uSizeLook, uDomMinLook, uDomMaxLook, color), uMixLook);
   }
 
   if (uUsarAlfa) {

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { nextId, type LibraryLut, type MusicTrack, type OverlayLayer, type TimelineClip } from '../edit/types';
+import { cargarLutsFabrica } from '../color/fabrica';
 import type { ExportPreset } from '../export/presets';
 import {
   borrarProyecto,
@@ -194,10 +195,18 @@ export function useProyecto(opciones: Opciones): Proyecto {
     const cerroBien = tomarCierreLimpio();
     void (async () => {
       void pedirPersistencia();
-      const [luts, sesion] = await Promise.all([leerLuts(), leerSesion()]);
+      // Los de fabrica se esperan aca junto con todo lo demas, y no se dejan
+      // entrar despues: mas abajo `reconstruir` descarta los LUTs que no esten
+      // en la biblioteca, asi que un montaje que usa uno de fabrica se abriria
+      // sin color y el autoguardado escribiria esa perdida en disco.
+      const [fabrica, luts, sesion] = await Promise.all([
+        cargarLutsFabrica(),
+        leerLuts(),
+        leerSesion(),
+      ]);
       if (!vivo) return;
 
-      const biblioteca = luts.map((l) => ({ id: l.id, name: l.name, lut: l.lut }));
+      const biblioteca = [...fabrica, ...luts.map((l) => ({ id: l.id, name: l.name, lut: l.lut }))];
       if (biblioteca.length > 0) opcionesRef.current.onBiblioteca(biblioteca);
       void refrescarLista();
       void medirCopias();

@@ -194,6 +194,60 @@ describe('reconstruir', () => {
     expect(estado.avisos).toEqual([]);
   });
 
+  // Los LUTs de fabrica se resuelven por el mismo camino que los del usuario,
+  // asi que lo unico que los mantiene vivos es que `useProyecto` los tenga
+  // cargados antes de restaurar. Si esa carga se volviera perezosa, este test
+  // sigue pasando pero la app perderia el color: ver el comentario del efecto
+  // de arranque en useProyecto.ts.
+  it('mantiene un LUT de fabrica', async () => {
+    const biblioteca: LibraryLut[] = [
+      { id: 'fabrica:slog3-santios', name: 'slog3 santios', lut: { size: 2, domainMin: [0, 0, 0], domainMax: [1, 1, 1], data: new Float32Array(24) } },
+    ];
+    const estado = await reconstruir(
+      doc({
+        clips: [clipDoc('c1', 'A.MP4', { lutConvId: 'fabrica:slog3-santios' })],
+        luts: ['fabrica:slog3-santios'],
+      }),
+      new Map([['c1', archivo('A.MP4')]]),
+      biblioteca,
+    );
+
+    expect(estado.clips[0]?.lutConvId).toBe('fabrica:slog3-santios');
+    expect(estado.avisos).toEqual([]);
+  });
+
+  // Un proyecto guardado antes de que existiera el deslizador no trae el campo:
+  // tiene que abrir con el LUT entero, que es como se veia al guardarlo.
+  it('un clip guardado sin la mezcla abre con el LUT entero', async () => {
+    const biblioteca: LibraryLut[] = [
+      { id: 'lutA', name: 'slog3.cube', lut: { size: 2, domainMin: [0, 0, 0], domainMax: [1, 1, 1], data: new Float32Array(24) } },
+    ];
+    const estado = await reconstruir(
+      doc({ clips: [clipDoc('c1', 'A.MP4', { lutConvId: 'lutA' })], luts: ['lutA'] }),
+      new Map([['c1', archivo('A.MP4')]]),
+      biblioteca,
+    );
+
+    expect(estado.clips[0]?.lutConvMix).toBe(1);
+    expect(estado.clips[0]?.lutLookMix).toBe(1);
+  });
+
+  it('conserva la mezcla guardada', async () => {
+    const biblioteca: LibraryLut[] = [
+      { id: 'lutA', name: 'slog3.cube', lut: { size: 2, domainMin: [0, 0, 0], domainMax: [1, 1, 1], data: new Float32Array(24) } },
+    ];
+    const estado = await reconstruir(
+      doc({
+        clips: [clipDoc('c1', 'A.MP4', { lutConvId: 'lutA', lutConvMix: 0.4 })],
+        luts: ['lutA'],
+      }),
+      new Map([['c1', archivo('A.MP4')]]),
+      biblioteca,
+    );
+
+    expect(estado.clips[0]?.lutConvMix).toBe(0.4);
+  });
+
   it('el clip cuyo LUT ya no esta entra sin LUT, no sin clip', async () => {
     const estado = await reconstruir(
       doc({ clips: [clipDoc('c1', 'A.MP4', { lutConvId: 'borrado' })], luts: ['borrado'] }),

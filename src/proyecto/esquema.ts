@@ -59,6 +59,13 @@ export interface ClipDoc {
   lutConvId: string | null;
   lutLookId: string | null;
   /**
+   * Cuanto pesa cada LUT, de 0 a 1. Opcionales al LEER por lo mismo que el
+   * grade: un proyecto guardado antes del deslizador no los trae y tiene que
+   * abrir con el LUT entero. Pasar por sanearMezcla().
+   */
+  lutConvMix?: number;
+  lutLookMix?: number;
+  /**
    * La correccion primaria. Opcionales al LEER: un proyecto guardado antes de que
    * el color existiera no los trae. Al escribir siempre salen los tres.
    *
@@ -172,6 +179,8 @@ export function serializarProyecto(estado: EstadoProyecto, ahora = Date.now()): 
       huella: huellaDe(c.file),
       lutConvId: c.lutConvId,
       lutLookId: c.lutLookId,
+      lutConvMix: c.lutConvMix,
+      lutLookMix: c.lutLookMix,
       lift: c.lift,
       gamma: c.gamma,
       gain: c.gain,
